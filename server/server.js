@@ -56,6 +56,12 @@ io.on('connection', (socket) => {
 
   // Player joins
   socket.on('join_player', (data) => {
+    // Guard against multiple join events from the same socket
+    if (players[socket.id]) {
+      socket.emit('player_joined', players[socket.id]);
+      return;
+    }
+
     if (!verifyGPS(data.lat, data.lng)) {
       socket.emit('error', 'GPS validation failed.');
       return;
@@ -71,7 +77,9 @@ io.on('connection', (socket) => {
       side: null // 'A' or 'B'
     };
     players[socket.id] = newPlayer;
-    idleQueue.push(socket.id);
+    if (!idleQueue.includes(socket.id)) {
+      idleQueue.push(socket.id);
+    }
     
     socket.emit('player_joined', newPlayer);
     broadcastState();

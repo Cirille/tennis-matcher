@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { socket } from '../socket';
+import TennisCourt from './TennisCourt';
 
 function AdminDashboard() {
   const navigate = useNavigate();
@@ -82,18 +83,21 @@ function AdminDashboard() {
         draggable
         onDragStart={(e) => onDragStart(e, p.id, sourceCourtId, sourceSide)}
         style={{ 
-          background: 'rgba(255,255,255,0.1)', 
+          background: 'rgba(0,0,0,0.5)', 
           padding: '8px', 
           borderRadius: '8px',
           marginBottom: '8px',
           cursor: 'grab',
           display: 'flex',
           alignItems: 'center',
-          gap: '10px'
+          gap: '10px',
+          border: '1px solid rgba(255,255,255,0.2)',
+          boxShadow: '0 2px 4px rgba(0,0,0,0.3)',
+          color: '#fff'
         }}
       >
         <img src={p.avatar} alt="avatar" width="30" height="30" style={{borderRadius: '50%'}} />
-        <div style={{ flex: 1 }}>
+        <div style={{ flex: 1, textShadow: '1px 1px 2px rgba(0,0,0,0.5)' }}>
           <div style={{fontWeight: 'bold', fontSize: '0.9rem'}}>{p.name} ({p.gender})</div>
           <div style={{fontSize: '0.8rem', color: 'var(--accent-tennis)'}}>Level: {p.level} | Idle: {p.idle_rounds}</div>
         </div>
@@ -178,24 +182,24 @@ function AdminDashboard() {
                   <button style={{background: 'none', border:'none', color:'white', cursor:'pointer', fontSize: '1.2rem'}} onClick={() => handleRemoveCourt(court.id)}>×</button>
                 </div>
                 
-                <div style={{ display: 'flex', flex: 1 }}>
+                <TennisCourt type={court.type}>
                   <div 
-                    style={{ flex: 1, padding: '10px', borderRight: '1px solid rgba(255,255,255,0.1)' }}
+                    style={{ flex: 1, padding: '15px' }}
                     onDragOver={onDragOver}
                     onDrop={(e) => onDrop(e, court.id, 'A')}
                   >
-                    <div style={{ textAlign: 'center', marginBottom: '10px', color: 'var(--text-secondary)' }}>Side A</div>
+                    <div style={{ textAlign: 'center', marginBottom: '10px', color: 'white', textShadow: '1px 1px 3px rgba(0,0,0,0.9)', fontWeight: 'bold' }}>Side A</div>
                     {court.sideA.map(id => renderPlayer(id, court.id, 'A'))}
                   </div>
                   <div 
-                    style={{ flex: 1, padding: '10px' }}
+                    style={{ flex: 1, padding: '15px' }}
                     onDragOver={onDragOver}
                     onDrop={(e) => onDrop(e, court.id, 'B')}
                   >
-                    <div style={{ textAlign: 'center', marginBottom: '10px', color: 'var(--text-secondary)' }}>Side B</div>
+                    <div style={{ textAlign: 'center', marginBottom: '10px', color: 'white', textShadow: '1px 1px 3px rgba(0,0,0,0.9)', fontWeight: 'bold' }}>Side B</div>
                     {court.sideB.map(id => renderPlayer(id, court.id, 'B'))}
                   </div>
-                </div>
+                </TennisCourt>
               </div>
             ))}
           </div>

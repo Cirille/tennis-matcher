@@ -8,6 +8,7 @@ function PlayerScreen() {
   const [hasJoined, setHasJoined] = useState(false);
   const [playerData, setPlayerData] = useState(null);
   const [isJoining, setIsJoining] = useState(false);
+  const [avatarPreview, setAvatarPreview] = useState(null);
 
   // Form State
   const [name, setName] = useState('');
@@ -45,6 +46,38 @@ function PlayerScreen() {
     };
   }, []);
 
+  const handleImageUpload = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      if (!file.type.startsWith('image/')) {
+        setErrorMsg('Please upload a valid image file (JPEG, PNG, GIF).');
+        return;
+      }
+      if (file.size > 5 * 1024 * 1024) {
+        setErrorMsg('Image is too large. Please select an image under 5MB.');
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = 100;
+          canvas.height = 100;
+          const ctx = canvas.getContext('2d');
+          const min = Math.min(img.width, img.height);
+          const sx = (img.width - min) / 2;
+          const sy = (img.height - min) / 2;
+          ctx.drawImage(img, sx, sy, min, min, 0, 0, 100, 100);
+          setAvatarPreview(canvas.toDataURL('image/jpeg', 0.8));
+          setErrorMsg('');
+        };
+        img.src = event.target.result;
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
   const handleJoin = (e) => {
     e.preventDefault();
     if (!name.trim()) return setErrorMsg('Name is required');
@@ -58,13 +91,15 @@ function PlayerScreen() {
           level,
           gender,
           lat: pos.coords.latitude,
-          lng: pos.coords.longitude
+          lng: pos.coords.longitude,
+          customAvatar: avatarPreview
         });
       },
       (err) => {
+        console.warn("Geolocation failed or denied. Proceeding with dummy coords.", err);
         // Fallback for testing without GPS
         socket.emit('join_player', {
-          name, level, gender, lat: 0, lng: 0
+          name, level, gender, lat: 0, lng: 0, customAvatar: avatarPreview
         });
       }
     );
@@ -250,6 +285,23 @@ function PlayerScreen() {
                 <option value="F">Female</option>
                 <option value="Other">Other</option>
               </select>
+            </div>
+            <div className="form-group" style={{ textAlign: 'center' }}>
+              <label className="form-label" style={{ textAlign: 'left' }}>Profile Picture (Optional)</label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
+                <div style={{ flexShrink: 0, width: '60px', height: '60px', borderRadius: '50%', background: 'rgba(0,0,0,0.3)', border: '2px solid var(--accent-tennis)', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  {avatarPreview ? <img src={avatarPreview} alt="preview" style={{width: '100%', height: '100%', objectFit: 'cover'}} /> : <span style={{fontSize: '0.8rem', color: 'var(--text-secondary)'}}>None</span>}
+                </div>
+                <input 
+                  type="file" 
+                  accept="image/png, image/jpeg, image/gif, image/webp"
+                  onChange={handleImageUpload}
+                  style={{ fontSize: '0.85rem', width: '100%', color: 'var(--text-primary)' }}
+                />
+              </div>
+              <p style={{fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '8px', textAlign: 'left'}}>
+                Max size: 5MB (JPEG/PNG/GIF). If not provided, a pixel avatar will be generated.
+              </p>
             </div>
             <div className="mt-4 flex gap-4">
               <button type="button" className="btn btn-secondary" style={{ flex: 1 }} onClick={() => navigate('/')} disabled={isJoining}>Back</button>

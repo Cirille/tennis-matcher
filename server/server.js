@@ -1,5 +1,6 @@
 const express = require('express');
 const http = require('http');
+const https = require('https');
 const { Server } = require('socket.io');
 const cors = require('cors');
 require('dotenv').config();
@@ -21,6 +22,9 @@ const PORT = process.env.PORT || 4000;
 // Global State Variables
 let clubName = 'My Tennis Club';
 let isLocked = false;
+let clubMapUrl = '';
+let clubLat = null;
+let clubLng = null;
 
 // Court structure: { id, type (Hard/Clay), number, sideA: [playerIds], sideB: [playerIds] }
 let courts = []; 
@@ -35,6 +39,9 @@ const broadcastState = () => {
     courts,
     idleQueue,
     players,
+    clubMapUrl,
+    clubLat,
+    clubLng
   };
   io.emit('state_update', adminState);
 };
@@ -44,9 +51,65 @@ const generateAvatar = (name) => {
   return `https://api.dicebear.com/7.x/pixel-art/svg?seed=${encodeURIComponent(name + Date.now())}`;
 };
 
-// Helper: GPS Verification
-// In a real app we would compute haversine distance. Here we just return true.
-const verifyGPS = (lat, lng) => true; 
+// Helper: GPS Distance Calculation (Haversine Formula)
+const getDistanceFromLatLonInKm = (lat1, lon1, lat2, lon2) => {
+  const R = 6371; // Earth radius in km
+  const dLat = (lat2 - lat1) * (Math.PI/180);
+  const dLon = (lon2 - lon1) * (Math.PI/180); 
+  const a = 
+    Math.sin(dLat/2) * Math.sin(dLat/2) +
+    Math.cos(lat1 * (Math.PI/180)) * Math.cos(lat2 * (Math.PI/180)) * 
+    Math.sin(dLon/2) * Math.sin(dLon/2); 
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)); 
+  return R * c; 
+};
+
+// Verify if player is within 2 km of the club
+const verifyGPS = (lat, lng) => {
+  if (clubLat === null || clubLng === null) {
+    return true; // Bypass if club location isn't set
+  }
+  if (!lat || !lng) return false;
+  
+  const distanceKm = getDistanceFromLatLonInKm(clubLat, clubLng, lat, lng);
+  console.log(`Player distance: ${distanceKm.toFixed(2)} km. (${lat},${lng}) vs Club (${clubLat},${clubLng})`);
+  return distanceKm <= 2.0; 
+};
+
+// URL Parser
+const extractLatLng = (urlStr) => {
+  const regex = /@(-?\d+\.\d+),(-?\d+\.\d+)/;
+  const match = urlStr.match(regex);
+  if (match) {
+    return { lat: parseFloat(match[1]), lng: parseFloat(match[2]) };
+  }
+  return null;
+};
+
+const resolveMapLink = async (urlStr) => {
+  try {
+    const directCoords = extractLatLng(urlStr);
+    if (directCoords) return directCoords;
+
+    return new Promise((resolve) => {
+      const isSecure = urlStr.startsWith('https');
+      const reqModule = isSecure ? https : http;
+      reqModule.get(urlStr, (res) => {
+        if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
+          const loc = res.headers.location;
+          const coords = extractLatLng(loc);
+          if (coords) return resolve(coords);
+        }
+        resolve(null);
+      }).on('error', (e) => {
+        console.error("Link resolve error:", e);
+        resolve(null);
+      });
+    });
+  } catch (e) {
+    return null;
+  }
+};
 
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
@@ -71,7 +134,7 @@ io.on('connection', (socket) => {
       name: data.name,
       level: Number(data.level),
       gender: data.gender,
-      avatar: generateAvatar(data.name),
+      avatar: data.customAvatar || generateAvatar(data.name),
       idle_rounds: 0,
       courtId: null,
       side: null // 'A' or 'B'
@@ -93,6 +156,26 @@ io.on('connection', (socket) => {
 
   socket.on('update_club_name', (name) => {
     clubName = name;
+    broadcastState();
+  });
+
+  socket.on('update_club_location', async (urlStr) => {
+    clubMapUrl = urlStr;
+    if (!urlStr || !urlStr.trim()) {
+      clubLat = null;
+      clubLng = null;
+    } else {
+      const coords = await resolveMapLink(urlStr);
+      if (coords) {
+        clubLat = coords.lat;
+        clubLng = coords.lng;
+        console.log(`Club Location set: ${clubLat}, ${clubLng}`);
+      } else {
+        socket.emit('error', 'Could not extract valid GPS coordinates from the provided map link.');
+        clubLat = null;
+        clubLng = null;
+      }
+    }
     broadcastState();
   });
 

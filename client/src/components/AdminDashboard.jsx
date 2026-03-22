@@ -10,7 +10,10 @@ function AdminDashboard() {
     courts: [],
     idleQueue: [],
     players: {},
-    isLocked: false
+    isLocked: false,
+    clubMapUrl: '',
+    clubLat: null,
+    clubLng: null
   });
 
   useEffect(() => {
@@ -74,7 +77,7 @@ function AdminDashboard() {
   };
 
   // Render player card
-  const renderPlayer = (id, sourceCourtId, sourceSide) => {
+  const renderPlayer = (id, sourceCourtId, sourceSide, isCourtSlot = false) => {
     const p = state.players[id];
     if (!p) return null;
     return (
@@ -86,21 +89,57 @@ function AdminDashboard() {
           background: 'rgba(0,0,0,0.5)', 
           padding: '8px', 
           borderRadius: '8px',
-          marginBottom: '8px',
+          marginBottom: isCourtSlot ? '0' : '8px',
           cursor: 'grab',
           display: 'flex',
           alignItems: 'center',
           gap: '10px',
           border: '1px solid rgba(255,255,255,0.2)',
           boxShadow: '0 2px 4px rgba(0,0,0,0.3)',
-          color: '#fff'
+          color: '#fff',
+          width: '100%',
+          boxSizing: 'border-box'
         }}
       >
         <img src={p.avatar} alt="avatar" width="30" height="30" style={{borderRadius: '50%'}} />
-        <div style={{ flex: 1, textShadow: '1px 1px 2px rgba(0,0,0,0.5)' }}>
-          <div style={{fontWeight: 'bold', fontSize: '0.9rem'}}>{p.name} ({p.gender})</div>
-          <div style={{fontSize: '0.8rem', color: 'var(--accent-tennis)'}}>Level: {p.level} | Idle: {p.idle_rounds}</div>
+        <div style={{ flex: 1, textShadow: '1px 1px 2px rgba(0,0,0,0.5)', overflow: 'hidden' }}>
+          <div style={{fontWeight: 'bold', fontSize: '0.85rem', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden'}}>{p.name} ({p.gender})</div>
+          <div style={{fontSize: '0.75rem', color: 'var(--accent-tennis)'}}>Level: {p.level} | Idle: {p.idle_rounds}</div>
         </div>
+      </div>
+    );
+  };
+
+  const renderCourtSlot = (courtId, side, slotIndex, playersArray) => {
+    const playerId = playersArray[slotIndex];
+    const isDroppable = !playerId;
+
+    return (
+      <div 
+        style={{ 
+          flex: 1, 
+          border: isDroppable ? '2px dashed rgba(255,255,255,0.4)' : 'none', 
+          borderRadius: '8px', 
+          margin: '4px 0',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: isDroppable ? 'rgba(0,0,0,0.2)' : 'transparent',
+          minHeight: '60px',
+          padding: isDroppable ? '4px' : '0',
+          width: '100%',
+          boxSizing: 'border-box'
+        }}
+        onDragOver={isDroppable ? onDragOver : undefined}
+        onDrop={(e) => {
+          if (isDroppable) onDrop(e, courtId, side);
+        }}
+      >
+        {playerId ? (
+           renderPlayer(playerId, courtId, side, true)
+        ) : (
+           <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: '0.8rem', fontWeight: 'bold' }}>Drop Here</span>
+        )}
       </div>
     );
   };
@@ -113,13 +152,32 @@ function AdminDashboard() {
         </div>
         <div>
           <h2 style={{margin: 0}}>Admin Dashboard</h2>
-          <input 
-            type="text" 
-            className="form-control mt-4" 
-            value={state.clubName} 
-            onChange={handleUpdateClubName} 
-            style={{ width: '250px', textAlign: 'center', display: 'inline-block' }}
-          />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '1rem', alignItems: 'center' }}>
+            <input 
+              type="text" 
+              className="form-control" 
+              value={state.clubName} 
+              onChange={handleUpdateClubName} 
+              placeholder="Club Name"
+              style={{ width: '250px', textAlign: 'center' }}
+            />
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', position: 'relative' }}>
+              <input 
+                type="text" 
+                className="form-control" 
+                value={state.clubMapUrl || ''} 
+                onChange={(e) => socket.emit('update_club_location', e.target.value)} 
+                placeholder="Google Maps Link (optional)"
+                style={{ width: '250px', textAlign: 'center', borderColor: (state.clubLat && state.clubLng) ? 'var(--accent-tennis)' : 'inherit' }}
+                title="Paste a Google Maps link to enforce that players must be physically near the club to join."
+              />
+              {(state.clubLat && state.clubLng) && (
+                <span style={{ color: 'var(--accent-tennis)', fontSize: '1.2rem', position: 'absolute', right: '-30px' }} title={`GPS Set: ${state.clubLat.toFixed(4)}, ${state.clubLng.toFixed(4)}`}>
+                  ✓
+                </span>
+              )}
+            </div>
+          </div>
         </div>
         <div style={{ display: 'flex', gap: '10px' }}>
           <button className="btn btn-primary" onClick={handleAutoMatchmake}>Auto Matchmake</button>
@@ -161,7 +219,8 @@ function AdminDashboard() {
               <div 
                 key={court.id} 
                 style={{ 
-                  flex: '1 1 300px', 
+                  flex: '0 0 320px', 
+                  width: '320px',
                   border: `2px solid ${court.type === 'Clay' ? 'var(--clay-court)' : 'var(--hard-court)'}`,
                   borderRadius: '12px',
                   background: 'rgba(0,0,0,0.3)',
@@ -183,21 +242,15 @@ function AdminDashboard() {
                 </div>
                 
                 <TennisCourt type={court.type}>
-                  <div 
-                    style={{ flex: 1, padding: '15px' }}
-                    onDragOver={onDragOver}
-                    onDrop={(e) => onDrop(e, court.id, 'A')}
-                  >
-                    <div style={{ textAlign: 'center', marginBottom: '10px', color: 'white', textShadow: '1px 1px 3px rgba(0,0,0,0.9)', fontWeight: 'bold' }}>Side A</div>
-                    {court.sideA.map(id => renderPlayer(id, court.id, 'A'))}
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '10px 10px 10px 15px', alignItems: 'stretch' }}>
+                    <div style={{ textAlign: 'center', marginBottom: '8px', color: 'white', textShadow: '1px 1px 3px rgba(0,0,0,0.9)', fontWeight: 'bold' }}>Side A</div>
+                    {renderCourtSlot(court.id, 'A', 0, court.sideA)}
+                    {renderCourtSlot(court.id, 'A', 1, court.sideA)}
                   </div>
-                  <div 
-                    style={{ flex: 1, padding: '15px' }}
-                    onDragOver={onDragOver}
-                    onDrop={(e) => onDrop(e, court.id, 'B')}
-                  >
-                    <div style={{ textAlign: 'center', marginBottom: '10px', color: 'white', textShadow: '1px 1px 3px rgba(0,0,0,0.9)', fontWeight: 'bold' }}>Side B</div>
-                    {court.sideB.map(id => renderPlayer(id, court.id, 'B'))}
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '10px 15px 10px 10px', alignItems: 'stretch' }}>
+                    <div style={{ textAlign: 'center', marginBottom: '8px', color: 'white', textShadow: '1px 1px 3px rgba(0,0,0,0.9)', fontWeight: 'bold' }}>Side B</div>
+                    {renderCourtSlot(court.id, 'B', 0, court.sideB)}
+                    {renderCourtSlot(court.id, 'B', 1, court.sideB)}
                   </div>
                 </TennisCourt>
               </div>

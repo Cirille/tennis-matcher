@@ -1,0 +1,36 @@
+# Rate Limiting Zone setup (DDoS protection)
+# Creates a zone allowing 5 requests per second per IP, with a 10MB memory cache for tracking IPs.
+limit_req_zone $binary_remote_addr zone=api_limit:10m rate=5r/s;
+
+server {
+    listen 80;
+    server_name yourdomain.com www.yourdomain.com; # REPLACE with your actual domain or server IP
+
+    # Serve the built React frontend
+    # REPLACE with the absolute path to your built React client folder (e.g., /var/www/tennis-matcher/client/build)
+    root /absolute/path/to/tennis-matcher/client/build;
+    index index.html;
+
+    location / {
+        # If the file isn't found, fallback to index.html (required for React Router single-page apps)
+        try_files $uri /index.html;
+    }
+
+    # Proxy Socket.io requests to your Node.js Backend (Running on Port 4000)
+    location /socket.io/ {
+        # Apply the rate limit here. "burst=20" allows up to 20 fast requests in a burst before rejecting.
+        limit_req zone=api_limit burst=20 nodelay;
+
+        proxy_pass http://127.0.0.1:4000; # Forward it to your local Node.js server
+        
+        # Essential parameters for WebSockets to work properly across Nginx
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        
+        # Forward the original user's IP address instead of Nginx's local IP
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}

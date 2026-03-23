@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { socket } from '../socket';
 import TennisCourt from './TennisCourt';
+import MatchHistory from './MatchHistory';
 
 function AdminDashboard() {
   const navigate = useNavigate();
@@ -10,7 +11,7 @@ function AdminDashboard() {
     courts: [],
     idleQueue: [],
     players: {},
-    isLocked: false,
+    gameStarted: false,
     clubMapUrl: '',
     clubLat: null,
     clubLng: null
@@ -44,8 +45,8 @@ function AdminDashboard() {
     socket.emit('auto_matchmake');
   };
 
-  const handleToggleLock = () => {
-    socket.emit('toggle_lock', !state.isLocked);
+  const handleToggleGame = () => {
+    socket.emit('toggle_game', !state.gameStarted);
   };
 
   // Drag & Drop Handlers
@@ -86,7 +87,8 @@ function AdminDashboard() {
         draggable
         onDragStart={(e) => onDragStart(e, p.id, sourceCourtId, sourceSide)}
         style={{ 
-          background: 'rgba(0,0,0,0.5)', 
+          background: p.disconnected ? 'rgba(0,0,0,0.8)' : 'rgba(0,0,0,0.5)', 
+          opacity: p.disconnected ? 0.6 : 1,
           padding: '8px', 
           borderRadius: '8px',
           marginBottom: isCourtSlot ? '0' : '8px',
@@ -101,9 +103,11 @@ function AdminDashboard() {
           boxSizing: 'border-box'
         }}
       >
-        <img src={p.avatar} alt="avatar" width="30" height="30" style={{borderRadius: '50%', minWidth: '30px', minHeight: '30px', flexShrink: 0, objectFit: 'cover'}} />
+        <img src={p.avatar} alt="avatar" width="30" height="30" style={{borderRadius: '50%', minWidth: '30px', minHeight: '30px', flexShrink: 0, objectFit: 'cover', filter: p.disconnected ? 'grayscale(100%)' : 'none'}} />
         <div style={{ flex: 1, textShadow: '1px 1px 2px rgba(0,0,0,0.5)', overflow: 'hidden' }}>
-          <div style={{fontWeight: 'bold', fontSize: '0.85rem', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden'}}>{p.name} ({p.gender})</div>
+          <div style={{fontWeight: 'bold', fontSize: '0.85rem', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden'}}>
+            {p.name} ({p.gender}){p.disconnected && <span style={{color: '#ff4444', fontSize: '0.75rem', fontWeight: 'bold'}}> [Offline]</span>}
+          </div>
           <div style={{fontSize: '0.75rem', color: 'var(--accent-tennis)'}}>Level: {p.level} | Idle: {p.idle_rounds}</div>
         </div>
       </div>
@@ -181,8 +185,8 @@ function AdminDashboard() {
         </div>
         <div style={{ display: 'flex', gap: '10px' }}>
           <button className="btn btn-primary" onClick={handleAutoMatchmake}>Auto Matchmake</button>
-          <button className={state.isLocked ? "btn btn-danger" : "btn btn-secondary"} onClick={handleToggleLock}>
-            {state.isLocked ? '🔒 Unlock Matches' : '🔓 Lock Matches'}
+          <button className={state.gameStarted ? "btn btn-danger" : "btn btn-success"} onClick={handleToggleGame}>
+            {state.gameStarted ? '⏹ End Game' : '▶ Start Game'}
           </button>
         </div>
       </div>
@@ -255,6 +259,7 @@ function AdminDashboard() {
             ))}
           </div>
 
+          <MatchHistory matchHistory={state.matchHistory} players={state.players} />
         </div>
       </div>
     </div>

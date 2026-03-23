@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { socket } from '../socket';
 import TennisCourt from './TennisCourt';
+import MatchHistory from './MatchHistory';
 
 function PlayerScreen() {
   const navigate = useNavigate();
@@ -12,7 +13,7 @@ function PlayerScreen() {
 
   // Form State
   const [name, setName] = useState('');
-  const [level, setLevel] = useState('3.0');
+  const [level, setLevel] = useState('5');
   const [gender, setGender] = useState('M');
 
   // App State
@@ -21,7 +22,7 @@ function PlayerScreen() {
     courts: [],
     idleQueue: [],
     players: {},
-    isLocked: false
+    gameStarted: false
   });
 
   const [errorMsg, setErrorMsg] = useState('');
@@ -29,20 +30,38 @@ function PlayerScreen() {
   useEffect(() => {
     socket.on('state_update', setState);
     socket.on('player_joined', (data) => {
+      localStorage.setItem('tennis_session_id', data.id);
       setPlayerData(data);
       setHasJoined(true);
       setIsJoining(false);
       setErrorMsg('');
     });
     socket.on('error', (msg) => {
+      if (msg && msg.includes('Session expired')) {
+        localStorage.removeItem('tennis_session_id');
+      }
       setErrorMsg(msg);
       setIsJoining(false);
     });
+
+    const onConnect = () => {
+      const sessionId = localStorage.getItem('tennis_session_id');
+      if (sessionId) {
+        socket.emit('join_player', { sessionId });
+      }
+    };
+
+    socket.on('connect', onConnect);
+
+    if (socket.connected) {
+      onConnect();
+    }
 
     return () => {
       socket.off('state_update', setState);
       socket.off('player_joined');
       socket.off('error');
+      socket.off('connect', onConnect);
     };
   }, []);
 
@@ -107,11 +126,12 @@ function PlayerScreen() {
 
   const handleExit = () => {
     // If locked, backend rejects, but we don't want weird UI state
-    if (state.isLocked) {
-      setErrorMsg("Match is locked, cannot exit.");
+    if (state.gameStarted) {
+      setErrorMsg("Game is in progress, cannot exit.");
       return;
     }
     socket.emit('player_exit');
+    localStorage.removeItem('tennis_session_id');
     setHasJoined(false);
     setPlayerData(null);
     navigate('/');
@@ -269,10 +289,10 @@ function PlayerScreen() {
               />
             </div>
             <div className="form-group">
-              <label className="form-label">Tennis Level</label>
+              <label className="form-label">Tennis Level (1 = Best, 10 = Beginner)</label>
               <select className="form-control" value={level} onChange={(e) => setLevel(e.target.value)}>
-                {[1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0].map(l => (
-                  <option key={l} value={l.toFixed(1)}>{l.toFixed(1)}</option>
+                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(l => (
+                  <option key={l} value={l}>{l}</option>
                 ))}
               </select>
             </div>
@@ -324,16 +344,18 @@ function PlayerScreen() {
               border: '1px solid var(--glass-border)'
             }}>
               <p style={{ fontWeight: '500', fontSize: '1.1rem' }}>{statusText}</p>
-              {state.isLocked && <p style={{ color: 'var(--danger)', marginTop: '0.5rem', fontSize: '0.85rem' }}>🔒 Match is currently locked by Admin.</p>}
+              {state.gameStarted && <p style={{ color: 'var(--accent-tennis)', marginTop: '0.5rem', fontSize: '0.85rem' }}>🎾 Game is in progress.</p>}
 
               {courtInfo ? renderTeammates() : renderClubStatus()}
             </div>
+
+            <MatchHistory matchHistory={state.matchHistory} players={state.players} />
 
             <button
               className="btn btn-danger mt-4"
               style={{ width: '100%' }}
               onClick={handleExit}
-              disabled={state.isLocked}
+              disabled={state.gameStarted}
             >
               Exit Session
             </button>

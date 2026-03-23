@@ -134,17 +134,6 @@ io.on('connection', (socket) => {
 
   // Player joins
   socket.on('join_player', (data) => {
-    // Rate Limit Check
-    const clientIp = socket.handshake.address;
-    const now = Date.now();
-    const lastJoin = joinRateLimits.get(clientIp) || 0;
-    
-    // Prevent more than one 'join_player' request every 3 seconds per IP
-    if (now - lastJoin < 3000) {
-      socket.emit('error', 'Too many join requests. Please try again in a few seconds.');
-      return;
-    }
-    joinRateLimits.set(clientIp, now);
 
     if (data.sessionId) {
       if (players[data.sessionId]) {

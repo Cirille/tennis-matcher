@@ -30,7 +30,7 @@ function PlayerScreen() {
   useEffect(() => {
     socket.on('state_update', setState);
     socket.on('player_joined', (data) => {
-      localStorage.setItem('tennis_session_id', data.id);
+      sessionStorage.setItem('tennis_session_id', data.id);
       setPlayerData(data);
       setHasJoined(true);
       setIsJoining(false);
@@ -38,14 +38,14 @@ function PlayerScreen() {
     });
     socket.on('error', (msg) => {
       if (msg && msg.includes('Session expired')) {
-        localStorage.removeItem('tennis_session_id');
+        sessionStorage.removeItem('tennis_session_id');
       }
       setErrorMsg(msg);
       setIsJoining(false);
     });
 
     const onConnect = () => {
-      const sessionId = localStorage.getItem('tennis_session_id');
+      const sessionId = sessionStorage.getItem('tennis_session_id');
       if (sessionId) {
         socket.emit('join_player', { sessionId });
       }
@@ -131,7 +131,7 @@ function PlayerScreen() {
       return;
     }
     socket.emit('player_exit');
-    localStorage.removeItem('tennis_session_id');
+    sessionStorage.removeItem('tennis_session_id');
     setHasJoined(false);
     setPlayerData(null);
     navigate('/');

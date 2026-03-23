@@ -158,7 +158,7 @@ function PlayerScreen() {
           fontWeight: isMe ? 'bold' : 'normal'
         }}
       >
-        <img src={p.avatar} alt="avatar" width="24" height="24" style={{borderRadius: '50%'}} />
+        <img src={p.avatar} alt="avatar" width="24" height="24" style={{borderRadius: '50%', minWidth: '24px', minHeight: '24px', flexShrink: 0, objectFit: 'cover'}} />
         <div style={{ textShadow: isMe ? 'none' : '1px 1px 2px rgba(0,0,0,0.6)' }}>
           <div>{p.name} {isMe && '(You)'}</div>
         </div>
@@ -177,13 +177,11 @@ function PlayerScreen() {
     return (
       <div className="mt-4 animate-fade-in" style={{ borderRadius: '12px', overflow: 'hidden', border: `2px solid ${courtInfo.type === 'Clay' ? 'var(--clay-court)' : 'var(--hard-court)'}` }}>
         <TennisCourt type={courtInfo.type}>
-          <div style={{ flex: 1, padding: '15px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
-            <div style={{ color: 'white', textShadow: '1px 1px 3px rgba(0,0,0,0.9)', fontWeight: 'bold', marginBottom: '10px' }}>Your Team</div>
+          <div style={{ flex: 1, padding: '20px 10px 20px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
             {mySideArray.map(id => renderPlayerBadge(state.players[id], id === socket.id))}
             {mySideArray.length === 0 && <div style={{color: 'rgba(255,255,255,0.7)', fontSize: '0.9rem', textShadow: '1px 1px 2px black'}}>Waiting...</div>}
           </div>
-          <div style={{ flex: 1, padding: '15px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
-            <div style={{ color: 'white', textShadow: '1px 1px 3px rgba(0,0,0,0.9)', fontWeight: 'bold', marginBottom: '10px' }}>Opponents</div>
+          <div style={{ flex: 1, padding: '20px 24px 20px 10px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
             {otherSideArray.map(id => renderPlayerBadge(state.players[id]))}
             {otherSideArray.length === 0 && <div style={{color: 'rgba(255,255,255,0.7)', fontSize: '0.9rem', textShadow: '1px 1px 2px black'}}>Waiting...</div>}
           </div>
@@ -202,7 +200,7 @@ function PlayerScreen() {
             if (!p) return null;
             return (
               <div key={id} style={{ display: 'flex', alignItems: 'center', gap: '6px', background: id === socket.id ? 'rgba(204, 255, 0, 0.2)' : 'rgba(255,255,255,0.1)', padding: '4px 8px', borderRadius: '12px', fontSize: '0.85rem', border: id === socket.id ? '1px solid var(--accent-tennis)' : '1px solid transparent' }}>
-                <img src={p.avatar} alt="avatar" width="20" height="20" style={{borderRadius: '50%'}} />
+                <img src={p.avatar} alt="avatar" width="20" height="20" style={{borderRadius: '50%', minWidth: '20px', minHeight: '20px', flexShrink: 0, objectFit: 'cover'}} />
                 <span style={{color: id === socket.id ? 'var(--accent-tennis)' : '#fff', fontWeight: id === socket.id ? 'bold' : 'normal'}}>{p.name} {id === socket.id && '(You)'}</span>
               </div>
             );
@@ -224,7 +222,7 @@ function PlayerScreen() {
                     if (!p) return null;
                     return (
                       <div key={id} style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px', fontSize: '0.85rem' }}>
-                        <img src={p.avatar} alt="avatar" width="18" height="18" style={{borderRadius: '50%'}} />
+                        <img src={p.avatar} alt="avatar" width="18" height="18" style={{borderRadius: '50%', minWidth: '18px', minHeight: '18px', flexShrink: 0, objectFit: 'cover'}} />
                         <span>{p.name}</span>
                       </div>
                     );
@@ -237,7 +235,7 @@ function PlayerScreen() {
                     if (!p) return null;
                     return (
                       <div key={id} style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px', fontSize: '0.85rem' }}>
-                        <img src={p.avatar} alt="avatar" width="18" height="18" style={{borderRadius: '50%'}} />
+                        <img src={p.avatar} alt="avatar" width="18" height="18" style={{borderRadius: '50%', minWidth: '18px', minHeight: '18px', flexShrink: 0, objectFit: 'cover'}} />
                         <span>{p.name}</span>
                       </div>
                     );

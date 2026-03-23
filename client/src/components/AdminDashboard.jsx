@@ -101,7 +101,7 @@ function AdminDashboard() {
           boxSizing: 'border-box'
         }}
       >
-        <img src={p.avatar} alt="avatar" width="30" height="30" style={{borderRadius: '50%'}} />
+        <img src={p.avatar} alt="avatar" width="30" height="30" style={{borderRadius: '50%', minWidth: '30px', minHeight: '30px', flexShrink: 0, objectFit: 'cover'}} />
         <div style={{ flex: 1, textShadow: '1px 1px 2px rgba(0,0,0,0.5)', overflow: 'hidden' }}>
           <div style={{fontWeight: 'bold', fontSize: '0.85rem', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden'}}>{p.name} ({p.gender})</div>
           <div style={{fontSize: '0.75rem', color: 'var(--accent-tennis)'}}>Level: {p.level} | Idle: {p.idle_rounds}</div>
@@ -120,7 +120,7 @@ function AdminDashboard() {
           flex: 1, 
           border: isDroppable ? '2px dashed rgba(255,255,255,0.4)' : 'none', 
           borderRadius: '8px', 
-          margin: '4px 0',
+          margin: '0',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -242,13 +242,11 @@ function AdminDashboard() {
                 </div>
                 
                 <TennisCourt type={court.type}>
-                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '10px 10px 10px 15px', alignItems: 'stretch' }}>
-                    <div style={{ textAlign: 'center', marginBottom: '8px', color: 'white', textShadow: '1px 1px 3px rgba(0,0,0,0.9)', fontWeight: 'bold' }}>Side A</div>
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '20px 10px 20px 24px', alignItems: 'stretch', justifyContent: 'center', gap: '8px' }}>
                     {renderCourtSlot(court.id, 'A', 0, court.sideA)}
                     {renderCourtSlot(court.id, 'A', 1, court.sideA)}
                   </div>
-                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '10px 15px 10px 10px', alignItems: 'stretch' }}>
-                    <div style={{ textAlign: 'center', marginBottom: '8px', color: 'white', textShadow: '1px 1px 3px rgba(0,0,0,0.9)', fontWeight: 'bold' }}>Side B</div>
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '20px 24px 20px 10px', alignItems: 'stretch', justifyContent: 'center', gap: '8px' }}>
                     {renderCourtSlot(court.id, 'B', 0, court.sideB)}
                     {renderCourtSlot(court.id, 'B', 1, court.sideB)}
                   </div>

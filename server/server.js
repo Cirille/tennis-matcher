@@ -181,6 +181,14 @@ io.on('connection', (socket) => {
 
   socket.on('toggle_lock', (locked) => {
     isLocked = locked;
+    if (locked) {
+      // Locking means round start. Reset idle rounds for playing, increment for idle.
+      courts.forEach(c => {
+        if (c.sideA) c.sideA.forEach(pid => { if(players[pid]) players[pid].idle_rounds = 0; });
+        if (c.sideB) c.sideB.forEach(pid => { if(players[pid]) players[pid].idle_rounds = 0; });
+      });
+      idleQueue.forEach(pid => { if(players[pid]) players[pid].idle_rounds += 1; });
+    }
     broadcastState();
   });
 
@@ -211,30 +219,52 @@ io.on('connection', (socket) => {
     topN.sort((a, b) => b.level - a.level);
 
     // 6. Distribute
+    let matchedPlayers = [];
+    let unmatchedPlayers = [];
     let pIdx = 0;
+
     for (let c of courts) {
-      if (!c.sideA) c.sideA = [];
-      if (!c.sideB) c.sideB = [];
+      c.sideA = [];
+      c.sideB = [];
       
-      // Side A
-      while(c.sideA.length < 2 && pIdx < topN.length) {
-         let p = topN[pIdx++];
-         p.courtId = c.id; 
-         p.side = 'A';
-         c.sideA.push(p.id);
-      }
-      // Side B
-      while(c.sideB.length < 2 && pIdx < topN.length) {
-         let p = topN[pIdx++];
-         p.courtId = c.id; 
-         p.side = 'B';
-         c.sideB.push(p.id);
+      let playersLeft = topN.length - pIdx;
+      
+      if (playersLeft >= 4) {
+        let p1 = topN[pIdx++];
+        let p2 = topN[pIdx++];
+        let p3 = topN[pIdx++];
+        let p4 = topN[pIdx++];
+        
+        p1.courtId = c.id; p1.side = 'A'; c.sideA.push(p1.id);
+        p2.courtId = c.id; p2.side = 'A'; c.sideA.push(p2.id);
+        p3.courtId = c.id; p3.side = 'B'; c.sideB.push(p3.id);
+        p4.courtId = c.id; p4.side = 'B'; c.sideB.push(p4.id);
+        
+        matchedPlayers.push(p1, p2, p3, p4);
+      } else if (playersLeft >= 2) {
+        let p1 = topN[pIdx++];
+        let p2 = topN[pIdx++];
+        
+        p1.courtId = c.id; p1.side = 'A'; c.sideA.push(p1.id);
+        p2.courtId = c.id; p2.side = 'B'; c.sideB.push(p2.id);
+        
+        matchedPlayers.push(p1, p2);
+      } else {
+        break;
       }
     }
 
-    // Update idle rounds
-    topN.forEach(p => p.idle_rounds = 0);
-    leftOver.forEach(p => p.idle_rounds += 1);
+    // Any remaining players in topN are unmatched
+    while (pIdx < topN.length) {
+       unmatchedPlayers.push(topN[pIdx++]);
+    }
+
+    // Idle rounds are now updated when matches are locked instead of during setup
+    leftOver = [...unmatchedPlayers, ...leftOver];
+    leftOver.forEach(p => {
+      p.courtId = null;
+      p.side = null;
+    });
     
     idleQueue = leftOver.map(p => p.id);
 

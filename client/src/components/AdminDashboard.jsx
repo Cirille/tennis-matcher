@@ -6,6 +6,11 @@ import MatchHistory from './MatchHistory';
 
 function AdminDashboard() {
   const navigate = useNavigate();
+  const [token, setToken] = useState(localStorage.getItem('admin_token') || '');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
+
   const [state, setState] = useState({
     clubName: '',
     courts: [],
@@ -14,13 +19,80 @@ function AdminDashboard() {
     gameStarted: false,
     clubMapUrl: '',
     clubLat: null,
-    clubLng: null
+    clubLng: null,
+    matchHistory: []
   });
 
+  const API_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:4000';
+
   useEffect(() => {
-    socket.on('state_update', setState);
-    return () => socket.off('state_update', setState);
-  }, []);
+    if (token) {
+      const clubId = localStorage.getItem('admin_clubId');
+      socket.emit('join_club_room', { clubId, role: 'ADMIN', token });
+
+      socket.on('state_update', setState);
+      socket.on('error', (msg) => {
+        if (msg.includes('Unauthorized')) handleLogout();
+        console.error(msg);
+      });
+
+      return () => {
+        socket.off('state_update');
+        socket.off('error');
+      };
+    }
+  }, [token]);
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    try {
+      const res = await fetch(`${API_URL}/api/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      });
+      const data = await res.json();
+      if (res.ok && data.role === 'ADMIN') {
+        localStorage.setItem('admin_token', data.token);
+        localStorage.setItem('admin_clubId', data.clubId);
+        setToken(data.token);
+        setErrorMsg('');
+      } else {
+        setErrorMsg(data.error || 'Access denied.');
+      }
+    } catch (e) {
+      setErrorMsg('Login request failed.');
+    }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('admin_token');
+    localStorage.removeItem('admin_clubId');
+    setToken('');
+  };
+
+  if (!token) {
+    return (
+      <div className="container" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh' }}>
+        <div className="glass-panel" style={{ width: '100%', maxWidth: '400px', textAlign: 'center' }}>
+          <h2>Club Admin Login</h2>
+          {errorMsg && <p style={{ color: 'var(--danger)', marginTop: '10px' }}>{errorMsg}</p>}
+          <form onSubmit={handleLogin} style={{ marginTop: '20px', textAlign: 'left' }}>
+            <div className="form-group">
+              <label className="form-label">Email</label>
+              <input type="email" value={email} onChange={e=>setEmail(e.target.value)} className="form-control" required />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Password</label>
+              <input type="password" value={password} onChange={e=>setPassword(e.target.value)} className="form-control" required />
+            </div>
+            <button type="submit" className="btn btn-primary mt-4" style={{width: '100%'}}>Login</button>
+            <button type="button" className="btn btn-secondary mt-2" style={{width: '100%'}} onClick={() => navigate('/')}>Back Home</button>
+          </form>
+        </div>
+      </div>
+    );
+  }
 
   const handleUpdateClubName = (e) => {
     socket.emit('update_club_name', e.target.value);
@@ -151,8 +223,9 @@ function AdminDashboard() {
   return (
     <div className="container animate-fade-in" style={{ display: 'flex', flexDirection: 'column', height: '100vh', padding: '1rem', maxWidth: 'none' }}>
       <div className="glass-panel text-center mb-4" style={{ padding: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div>
+        <div style={{ display: 'flex', gap: '10px' }}>
           <button className="btn btn-secondary" onClick={() => navigate('/')}>Home</button>
+          <button className="btn btn-danger" onClick={handleLogout}>Logout</button>
         </div>
         <div>
           <h2 style={{margin: 0}}>Admin Dashboard</h2>

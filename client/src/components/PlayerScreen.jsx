@@ -1,41 +1,70 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { socket } from '../socket';
 import TennisCourt from './TennisCourt';
 import MatchHistory from './MatchHistory';
 
 function PlayerScreen() {
   const navigate = useNavigate();
+  const { clubSlug } = useParams();
+  
   const [hasJoined, setHasJoined] = useState(false);
   const [playerData, setPlayerData] = useState(null);
+  
+  const [pinVerified, setPinVerified] = useState(false);
+  const [isVerifying, setIsVerifying] = useState(false);
   const [isJoining, setIsJoining] = useState(false);
   const [avatarPreview, setAvatarPreview] = useState(null);
+  const [errorMsg, setErrorMsg] = useState('');
 
   // Form State
+  const [pin, setPin] = useState('');
   const [name, setName] = useState('');
   const [level, setLevel] = useState('5');
   const [gender, setGender] = useState('M');
 
   // App State
   const [state, setState] = useState({
-    clubName: 'Tennis Club',
+    clubName: 'Loading Club...',
     courts: [],
     idleQueue: [],
     players: {},
     gameStarted: false
   });
 
-  const [errorMsg, setErrorMsg] = useState('');
+  const API_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:4000';
 
   useEffect(() => {
+    if (!clubSlug) return;
+
+    // 1. Fetch initial public club data (Name)
+    const fetchClub = async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/clubs/${clubSlug}`);
+        const data = await res.json();
+        if (res.ok) {
+          setState(s => ({ ...s, clubName: data.name }));
+        } else {
+          setErrorMsg(data.error || 'Club not found.');
+        }
+      } catch (e) {
+        setErrorMsg('Failed to load club information.');
+      }
+    };
+    fetchClub();
+
+    // 2. Setup Sockets
     socket.on('state_update', setState);
+    
     socket.on('player_joined', (data) => {
       sessionStorage.setItem('tennis_session_id', data.id);
       setPlayerData(data);
+      setPinVerified(true); // they are already in!
       setHasJoined(true);
       setIsJoining(false);
       setErrorMsg('');
     });
+    
     socket.on('error', (msg) => {
       if (msg && msg.includes('Session expired')) {
         sessionStorage.removeItem('tennis_session_id');
@@ -45,6 +74,10 @@ function PlayerScreen() {
     });
 
     const onConnect = () => {
+      // Connect to the isolated multi-tenant room immediately to receive broadcasts
+      socket.emit('join_club_room', { clubId: clubSlug, role: 'PLAYER' });
+
+      // Attempt auto-rejoin if they refresh the tab
       const sessionId = sessionStorage.getItem('tennis_session_id');
       if (sessionId) {
         socket.emit('join_player', { sessionId });
@@ -52,7 +85,6 @@ function PlayerScreen() {
     };
 
     socket.on('connect', onConnect);
-
     if (socket.connected) {
       onConnect();
     }
@@ -63,26 +95,40 @@ function PlayerScreen() {
       socket.off('error');
       socket.off('connect', onConnect);
     };
-  }, []);
+  }, [clubSlug]);
+
+  const handleVerifyPin = async (e) => {
+    e.preventDefault();
+    setIsVerifying(true);
+    try {
+      const res = await fetch(`${API_URL}/api/clubs/${clubSlug}/verify-pin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin })
+      });
+      if (res.ok) {
+        setPinVerified(true);
+        setErrorMsg('');
+      } else {
+        setErrorMsg('Invalid PIN. Please ask the club admin.');
+      }
+    } catch (e) {
+      setErrorMsg('Verification failed.');
+    }
+    setIsVerifying(false);
+  };
 
   const handleImageUpload = (e) => {
     const file = e.target.files[0];
     if (file) {
-      if (!file.type.startsWith('image/')) {
-        setErrorMsg('Please upload a valid image file (JPEG, PNG, GIF).');
-        return;
-      }
-      if (file.size > 5 * 1024 * 1024) {
-        setErrorMsg('Image is too large. Please select an image under 5MB.');
-        return;
-      }
+      if (!file.type.startsWith('image/')) return setErrorMsg('Please upload a valid image file.');
+      if (file.size > 5 * 1024 * 1024) return setErrorMsg('Image is too large. Max 5MB.');
       const reader = new FileReader();
       reader.onload = (event) => {
         const img = new Image();
         img.onload = () => {
           const canvas = document.createElement('canvas');
-          canvas.width = 100;
-          canvas.height = 100;
+          canvas.width = 100; canvas.height = 100;
           const ctx = canvas.getContext('2d');
           const min = Math.min(img.width, img.height);
           const sx = (img.width - min) / 2;
@@ -102,13 +148,10 @@ function PlayerScreen() {
     if (!name.trim()) return setErrorMsg('Name is required');
     setIsJoining(true);
 
-    // Geo validation mock
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         socket.emit('join_player', {
-          name,
-          level,
-          gender,
+          name, level, gender,
           lat: pos.coords.latitude,
           lng: pos.coords.longitude,
           customAvatar: avatarPreview
@@ -116,7 +159,6 @@ function PlayerScreen() {
       },
       (err) => {
         console.warn("Geolocation failed or denied. Proceeding with dummy coords.", err);
-        // Fallback for testing without GPS
         socket.emit('join_player', {
           name, level, gender, lat: 0, lng: 0, customAvatar: avatarPreview
         });
@@ -125,7 +167,6 @@ function PlayerScreen() {
   };
 
   const handleExit = () => {
-    // If locked, backend rejects, but we don't want weird UI state
     if (state.gameStarted) {
       setErrorMsg("Game is in progress, cannot exit.");
       return;
@@ -133,19 +174,16 @@ function PlayerScreen() {
     socket.emit('player_exit');
     sessionStorage.removeItem('tennis_session_id');
     setHasJoined(false);
+    setPinVerified(false);
     setPlayerData(null);
-    navigate('/');
   };
 
-  // Determine user's current status
   let statusText = "You are in the setup phase.";
   let courtInfo = null;
 
   if (hasJoined && playerData) {
-    // Need to find player in state.players to get latest courtId
-    const currentPlayer = state.players[socket.id];
+    const currentPlayer = state.players[playerData.id];
     if (!currentPlayer) {
-      // Kicked or left
       statusText = "You have been disconnected.";
     } else if (!currentPlayer.courtId) {
       statusText = `Waiting in the Idle Queue.`;
@@ -188,7 +226,7 @@ function PlayerScreen() {
 
   const renderTeammates = () => {
     if (!courtInfo) return null;
-    const currentPlayer = state.players[socket.id];
+    const currentPlayer = state.players[playerData.id];
     if (!currentPlayer) return null;
 
     const mySideArray = currentPlayer.side === 'A' ? courtInfo.sideA : courtInfo.sideB;
@@ -198,7 +236,7 @@ function PlayerScreen() {
       <div className="mt-4 animate-fade-in" style={{ borderRadius: '12px', overflow: 'hidden', border: `2px solid ${courtInfo.type === 'Clay' ? 'var(--clay-court)' : 'var(--hard-court)'}` }}>
         <TennisCourt type={courtInfo.type}>
           <div style={{ flex: 1, padding: '20px 10px 20px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
-            {mySideArray.map(id => renderPlayerBadge(state.players[id], id === socket.id))}
+            {mySideArray.map(id => renderPlayerBadge(state.players[id], id === playerData.id))}
             {mySideArray.length === 0 && <div style={{color: 'rgba(255,255,255,0.7)', fontSize: '0.9rem', textShadow: '1px 1px 2px black'}}>Waiting...</div>}
           </div>
           <div style={{ flex: 1, padding: '20px 24px 20px 10px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
@@ -219,9 +257,9 @@ function PlayerScreen() {
             const p = state.players[id];
             if (!p) return null;
             return (
-              <div key={id} style={{ display: 'flex', alignItems: 'center', gap: '6px', background: id === socket.id ? 'rgba(204, 255, 0, 0.2)' : 'rgba(255,255,255,0.1)', padding: '4px 8px', borderRadius: '12px', fontSize: '0.85rem', border: id === socket.id ? '1px solid var(--accent-tennis)' : '1px solid transparent' }}>
+              <div key={id} style={{ display: 'flex', alignItems: 'center', gap: '6px', background: id === playerData.id ? 'rgba(204, 255, 0, 0.2)' : 'rgba(255,255,255,0.1)', padding: '4px 8px', borderRadius: '12px', fontSize: '0.85rem', border: id === playerData.id ? '1px solid var(--accent-tennis)' : '1px solid transparent' }}>
                 <img src={p.avatar} alt="avatar" width="20" height="20" style={{borderRadius: '50%', minWidth: '20px', minHeight: '20px', flexShrink: 0, objectFit: 'cover'}} />
-                <span style={{color: id === socket.id ? 'var(--accent-tennis)' : '#fff', fontWeight: id === socket.id ? 'bold' : 'normal'}}>{p.name} {id === socket.id && '(You)'}</span>
+                <span style={{color: id === playerData.id ? 'var(--accent-tennis)' : '#fff', fontWeight: id === playerData.id ? 'bold' : 'normal'}}>{p.name} {id === playerData.id && '(You)'}</span>
               </div>
             );
           }) : <div style={{color: 'var(--text-secondary)', fontSize: '0.85rem'}}>No one is waiting.</div>}
@@ -276,87 +314,77 @@ function PlayerScreen() {
         {errorMsg && <div className="mb-4 animate-fade-in" style={{ color: 'var(--danger)', background: 'rgba(239, 68, 68, 0.1)', padding: '10px', borderRadius: '8px' }}>{errorMsg}</div>}
 
         {!hasJoined ? (
-          <form onSubmit={handleJoin} className="animate-fade-in text-left">
-            <div className="form-group">
-              <label className="form-label">Player Name</label>
-              <input
-                type="text"
-                className="form-control"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Enter your name"
-                required
-              />
-            </div>
-            <div className="form-group">
-              <label className="form-label">Tennis Level (1 = Best, 10 = Beginner)</label>
-              <select className="form-control" value={level} onChange={(e) => setLevel(e.target.value)}>
-                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(l => (
-                  <option key={l} value={l}>{l}</option>
-                ))}
-              </select>
-            </div>
-            <div className="form-group">
-              <label className="form-label">Gender</label>
-              <select className="form-control" value={gender} onChange={(e) => setGender(e.target.value)}>
-                <option value="M">Male</option>
-                <option value="F">Female</option>
-                <option value="Other">Other</option>
-              </select>
-            </div>
-            <div className="form-group" style={{ textAlign: 'center' }}>
-              <label className="form-label" style={{ textAlign: 'left' }}>Profile Picture (Optional)</label>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
-                <div style={{ flexShrink: 0, width: '60px', height: '60px', borderRadius: '50%', background: 'rgba(0,0,0,0.3)', border: '2px solid var(--accent-tennis)', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  {avatarPreview ? <img src={avatarPreview} alt="preview" style={{width: '100%', height: '100%', objectFit: 'cover'}} /> : <span style={{fontSize: '0.8rem', color: 'var(--text-secondary)'}}>None</span>}
-                </div>
-                <input 
-                  type="file" 
-                  accept="image/png, image/jpeg, image/gif, image/webp"
-                  onChange={handleImageUpload}
-                  style={{ fontSize: '0.85rem', width: '100%', color: 'var(--text-primary)' }}
+          !pinVerified ? (
+            // Kahoot-style Step 1: PIN
+            <form onSubmit={handleVerifyPin} className="animate-fade-in text-left">
+              <div className="form-group">
+                <label className="form-label">Enter Club PIN</label>
+                <input
+                  type="text"
+                  className="form-control"
+                  value={pin}
+                  onChange={(e) => setPin(e.target.value)}
+                  placeholder="Ask the Admin for the PIN"
+                  required
                 />
               </div>
-              <p style={{fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '8px', textAlign: 'left'}}>
-                Max size: 5MB (JPEG/PNG/GIF). If not provided, a pixel avatar will be generated.
-              </p>
-            </div>
-            <div className="mt-4 flex gap-4">
-              <button type="button" className="btn btn-secondary" style={{ flex: 1 }} onClick={() => navigate('/')} disabled={isJoining}>Back</button>
-              <button type="submit" className="btn btn-primary" style={{ flex: 2 }} disabled={isJoining}>{isJoining ? 'Joining...' : 'Join Session'}</button>
-            </div>
-          </form>
+              <div className="mt-4 flex gap-4">
+                <button type="button" className="btn btn-secondary" style={{ flex: 1 }} onClick={() => navigate('/')}>Cancel</button>
+                <button type="submit" className="btn btn-primary" style={{ flex: 2 }} disabled={isVerifying}>{isVerifying ? 'Checking...' : 'Verify PIN'}</button>
+              </div>
+            </form>
+          ) : (
+            // Kahoot-style Step 2: Player Details
+            <form onSubmit={handleJoin} className="animate-fade-in text-left">
+              <div className="form-group">
+                <label className="form-label">Player Name</label>
+                <input type="text" className="form-control" value={name} onChange={(e) => setName(e.target.value)} placeholder="Enter your name" required />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Tennis Level (1 = Best, 10 = Beginner)</label>
+                <select className="form-control" value={level} onChange={(e) => setLevel(e.target.value)}>
+                  {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(l => (
+                    <option key={l} value={l}>{l}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Gender</label>
+                <select className="form-control" value={gender} onChange={(e) => setGender(e.target.value)}>
+                  <option value="M">Male</option><option value="F">Female</option><option value="Other">Other</option>
+                </select>
+              </div>
+              <div className="form-group" style={{ textAlign: 'center' }}>
+                <label className="form-label" style={{ textAlign: 'left' }}>Profile Picture (Optional)</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
+                  <div style={{ flexShrink: 0, width: '60px', height: '60px', borderRadius: '50%', background: 'rgba(0,0,0,0.3)', border: '2px solid var(--accent-tennis)', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    {avatarPreview ? <img src={avatarPreview} alt="preview" style={{width: '100%', height: '100%', objectFit: 'cover'}} /> : <span style={{fontSize: '0.8rem', color: 'var(--text-secondary)'}}>None</span>}
+                  </div>
+                  <input type="file" accept="image/png, image/jpeg, image/gif, image/webp" onChange={handleImageUpload} style={{ fontSize: '0.85rem', width: '100%', color: 'var(--text-primary)' }} />
+                </div>
+              </div>
+              <div className="mt-4 flex gap-4">
+                <button type="button" className="btn btn-secondary" style={{ flex: 1 }} onClick={() => setPinVerified(false)}>Back</button>
+                <button type="submit" className="btn btn-primary" style={{ flex: 2 }} disabled={isJoining}>{isJoining ? 'Joining...' : 'Enter Session'}</button>
+              </div>
+            </form>
+          )
         ) : (
           <div className="animate-fade-in">
-            {state.players[socket.id] && (
-              <img
-                src={state.players[socket.id].avatar}
-                alt="Profile"
-                style={{ width: '80px', height: '80px', borderRadius: '50%', marginBottom: '1rem', border: '2px solid var(--accent-tennis)' }}
-              />
+            {state.players[playerData.id] && (
+              <img src={state.players[playerData.id].avatar} alt="Profile" style={{ width: '80px', height: '80px', borderRadius: '50%', marginBottom: '1rem', border: '2px solid var(--accent-tennis)' }} />
             )}
-            <h3>Welcome, {state.players[socket.id]?.name}</h3>
+            <h3>Welcome, {state.players[playerData.id]?.name}</h3>
 
-            <div className="mt-4" style={{
-              padding: '1rem',
-              background: 'rgba(0,0,0,0.3)',
-              borderRadius: '8px',
-              border: '1px solid var(--glass-border)'
-            }}>
+            <div className="mt-4" style={{ padding: '1rem', background: 'rgba(0,0,0,0.3)', borderRadius: '8px', border: '1px solid var(--glass-border)' }}>
               <p style={{ fontWeight: '500', fontSize: '1.1rem' }}>{statusText}</p>
               {state.gameStarted && <p style={{ color: 'var(--accent-tennis)', marginTop: '0.5rem', fontSize: '0.85rem' }}>🎾 Game is in progress.</p>}
-
               {courtInfo ? renderTeammates() : renderClubStatus()}
             </div>
 
             <MatchHistory matchHistory={state.matchHistory} players={state.players} />
 
-            <button
-              className="btn btn-danger mt-4"
-              style={{ width: '100%' }}
-              onClick={handleExit}
-              disabled={state.gameStarted}
-            >
+            <button className="btn btn-danger mt-4" style={{ width: '100%' }} onClick={handleExit} disabled={state.gameStarted}>
               Exit Session
             </button>
           </div>

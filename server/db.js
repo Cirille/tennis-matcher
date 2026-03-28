@@ -30,29 +30,21 @@ const initDB = () => {
       )
     `);
 
-    // Seed Root Account if empty
+    // Seed Root Account if no admins exist
     db.get("SELECT count(*) as count FROM Admins", (err, row) => {
       if (err) console.error(err);
       if (row && row.count === 0) {
         const bcrypt = require('bcryptjs');
-        const hash = bcrypt.hashSync('root', 10);
+        const rootEmail = process.env.ROOT_EMAIL || 'root@tennis.com';
+        const rootPassword = process.env.ROOT_PASSWORD;
+        if (!rootPassword) {
+          console.error('FATAL: ROOT_PASSWORD environment variable is not set. Needed for initial root account seed.');
+          process.exit(1);
+        }
+        const hash = bcrypt.hashSync(rootPassword, 10);
         db.run(`INSERT INTO Admins (email, password_hash, role, clubId) VALUES (?, ?, ?, ?)`, 
-          ['root@tennis.com', hash, 'ROOT', null]);
-        console.log("Seeded default ROOT account. email: root@tennis.com, pass: root");
-      }
-    });
-
-    // Seed Demo Club & Admin if empty (just for seamless testing right now without Root setup)
-    db.get("SELECT count(*) as count FROM Clubs", (err, row) => {
-      if (err) console.error(err);
-      if (row && row.count === 0) {
-        const bcrypt = require('bcryptjs');
-        const hash = bcrypt.hashSync('admin', 10);
-        db.run(`INSERT INTO Clubs (id, name, pin) VALUES (?, ?, ?)`, 
-          ['demo-club', 'Demo Tennis Club', '1234']);
-        db.run(`INSERT INTO Admins (email, password_hash, role, clubId) VALUES (?, ?, ?, ?)`, 
-          ['admin@demo.com', hash, 'ADMIN', 'demo-club']);
-        console.log("Seeded Demo Club (ID: demo-club, PIN: 1234). Admin: admin@demo.com, pass: admin");
+          [rootEmail, hash, 'ROOT', null]);
+        console.log(`Seeded ROOT account. Email: ${rootEmail}. Use the Root Dashboard to create clubs.`);
       }
     });
   });

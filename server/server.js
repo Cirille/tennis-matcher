@@ -11,11 +11,16 @@ const db = require('./db');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 
-const app = express();
-app.use(cors());
-app.use(express.json());
+const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:5173';
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  console.error('FATAL: JWT_SECRET environment variable is not set. Create a .env file with JWT_SECRET=your_secret_key');
+  process.exit(1);
+}
 
-const JWT_SECRET = process.env.JWT_SECRET || 'super_secret_tennis_key_2026';
+const app = express();
+app.use(cors({ origin: CORS_ORIGIN }));
+app.use(express.json());
 
 // ----------------------------------------
 // EXPRESS API - Auth & Dashboards
@@ -105,7 +110,7 @@ app.post('/api/clubs/:id/verify-pin', (req, res) => {
 // ----------------------------------------
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: '*', methods: ['GET', 'POST'] }
+  cors: { origin: CORS_ORIGIN, methods: ['GET', 'POST'] }
 });
 
 const clubStates = {};
@@ -117,7 +122,9 @@ const getClubState = (clubId) => {
       gameStarted: false,
       clubMapUrl: null, clubLat: null, clubLng: null,
       courts: [], players: {}, idleQueue: [],
-      disconnectTimers: {}, idleAtStart: new Set(), matchHistory: []
+      disconnectTimers: {}, idleAtStart: new Set(), matchHistory: [],
+      pendingApprovals: [],
+      requireApproval: false
     };
     // Fetch initial config from DB
     db.get("SELECT name, mapUrl, lat, lng FROM Clubs WHERE id = ?", [clubId], (err, row) => {
@@ -143,7 +150,9 @@ const broadcastState = (clubId, emitToId = null) => {
     clubMapUrl: state.clubMapUrl,
     clubLat: state.clubLat,
     clubLng: state.clubLng,
-    matchHistory: state.matchHistory
+    matchHistory: state.matchHistory,
+    pendingApprovals: state.pendingApprovals,
+    requireApproval: state.requireApproval
   };
   if (emitToId) {
     io.to(emitToId).emit('state_update', payload);
@@ -250,10 +259,17 @@ io.on('connection', (socket) => {
       return;
     }
 
+    // If admin requires approval for ALL players (GPS verification disabled)
+    if (state.requireApproval) {
+      socket.emit('approval_required', { message: 'This club requires admin approval to join.' });
+      return;
+    }
+
+    // If GPS is set, validate distance
     if (state.clubLat && state.clubLng && data.lat && data.lng) {
       const dist = getDistanceFromLatLonInKm(state.clubLat, state.clubLng, data.lat, data.lng);
       if (dist > 2.0) {
-        socket.emit('error', 'GPS validation failed. You are too far from the club.');
+        socket.emit('gps_failed', { distance: Math.round(dist * 10) / 10 });
         return;
       }
     }
@@ -367,6 +383,108 @@ io.on('connection', (socket) => {
         if (state.gameStarted) state.idleAtStart.delete(playerId);
       }
     }
+    broadcastState(socket.clubId);
+  });
+
+  // ---- GPS Approval Flow ----
+  socket.on('request_approval', (data) => {
+    if (!socket.clubId) return;
+    const state = getClubState(socket.clubId);
+
+    // Prevent duplicate requests from same socket
+    if (state.pendingApprovals.find(p => p.socketId === socket.id)) {
+      socket.emit('error', 'You already have a pending approval request.');
+      return;
+    }
+
+    const generateAvatar2 = (name) => `https://api.dicebear.com/7.x/pixel-art/svg?seed=${encodeURIComponent(name + Date.now())}`;
+    const request = {
+      id: crypto.randomUUID(),
+      socketId: socket.id,
+      name: data.name,
+      level: Number(data.level),
+      gender: data.gender,
+      avatar: data.customAvatar || generateAvatar2(data.name),
+      distance: data.distance || null
+    };
+    state.pendingApprovals.push(request);
+    broadcastState(socket.clubId);
+  });
+
+  socket.on('admin_approve_player', ({ requestId }) => {
+    if (!socket.isAdmin || !socket.clubId) return;
+    const state = getClubState(socket.clubId);
+    const idx = state.pendingApprovals.findIndex(p => p.id === requestId);
+    if (idx === -1) return;
+
+    const request = state.pendingApprovals.splice(idx, 1)[0];
+    const sessionId = crypto.randomUUID();
+    const newPlayer = {
+      id: sessionId,
+      currentSocketId: request.socketId,
+      name: request.name,
+      level: request.level,
+      gender: request.gender,
+      avatar: request.avatar,
+      idle_rounds: 0,
+      courtId: null,
+      side: null,
+      disconnected: false
+    };
+    state.players[sessionId] = newPlayer;
+    if (!state.idleQueue.includes(sessionId)) state.idleQueue.push(sessionId);
+
+    io.to(request.socketId).emit('player_joined', newPlayer);
+    broadcastState(socket.clubId);
+  });
+
+  socket.on('admin_deny_player', ({ requestId }) => {
+    if (!socket.isAdmin || !socket.clubId) return;
+    const state = getClubState(socket.clubId);
+    const idx = state.pendingApprovals.findIndex(p => p.id === requestId);
+    if (idx === -1) return;
+
+    const request = state.pendingApprovals.splice(idx, 1)[0];
+    io.to(request.socketId).emit('approval_denied', { message: 'Your request to join has been denied by the admin.' });
+    broadcastState(socket.clubId);
+  });
+
+  // ---- Remove Player (Admin) ----
+  socket.on('admin_remove_player', ({ playerId }) => {
+    if (!socket.isAdmin || !socket.clubId) return;
+    const state = getClubState(socket.clubId);
+    const player = state.players[playerId];
+    if (!player) return;
+
+    // Notify the player before removing
+    if (player.currentSocketId) {
+      io.to(player.currentSocketId).emit('player_removed', { message: 'You have been removed from the session by the admin.' });
+    }
+
+    // Clean up from idle queue
+    state.idleQueue = state.idleQueue.filter(id => id !== playerId);
+    // Clean up from courts
+    if (player.courtId) {
+      const court = state.courts.find(c => c.id === player.courtId);
+      if (court) {
+        if (court.sideA) court.sideA = court.sideA.filter(id => id !== playerId);
+        if (court.sideB) court.sideB = court.sideB.filter(id => id !== playerId);
+      }
+    }
+    // Clean up disconnect timer
+    if (state.disconnectTimers[playerId]) {
+      clearTimeout(state.disconnectTimers[playerId]);
+      delete state.disconnectTimers[playerId];
+    }
+    delete state.players[playerId];
+    broadcastState(socket.clubId);
+  });
+
+  // ---- Toggle Require Approval ----
+  socket.on('toggle_require_approval', (value) => {
+    if (!socket.isAdmin || !socket.clubId) return;
+    const state = getClubState(socket.clubId);
+    state.requireApproval = !!value;
     broadcastState(socket.clubId);
   });
 

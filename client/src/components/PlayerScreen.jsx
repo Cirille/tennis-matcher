@@ -16,6 +16,11 @@ function PlayerScreen() {
   const [isJoining, setIsJoining] = useState(false);
   const [avatarPreview, setAvatarPreview] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
+  const [awaitingApproval, setAwaitingApproval] = useState(false);
+  const [approvalMessage, setApprovalMessage] = useState('');
+  const [removedMessage, setRemovedMessage] = useState('');
+  const [gpsFailed, setGpsFailed] = useState(false);
+  const [gpsDistance, setGpsDistance] = useState(null);
 
   // Form State
   const [pin, setPin] = useState('');
@@ -73,6 +78,37 @@ function PlayerScreen() {
       setIsJoining(false);
     });
 
+    socket.on('gps_failed', ({ distance }) => {
+      setGpsFailed(true);
+      setGpsDistance(distance);
+      setIsJoining(false);
+      setErrorMsg('');
+    });
+
+    socket.on('approval_required', ({ message }) => {
+      setApprovalMessage(message);
+      setIsJoining(false);
+      setErrorMsg('');
+    });
+
+    socket.on('approval_denied', ({ message }) => {
+      setAwaitingApproval(false);
+      setGpsFailed(false);
+      setApprovalMessage('');
+      setErrorMsg(message || 'Your request to join has been denied.');
+    });
+
+    socket.on('player_removed', ({ message }) => {
+      sessionStorage.removeItem('tennis_session_id');
+      setHasJoined(false);
+      setPinVerified(true); // keep them on the join form, not PIN screen
+      setPlayerData(null);
+      setAwaitingApproval(false);
+      setGpsFailed(false);
+      setApprovalMessage('');
+      setRemovedMessage(message || 'You have been removed by the admin.');
+    });
+
     const onConnect = () => {
       // Connect to the isolated multi-tenant room immediately to receive broadcasts
       socket.emit('join_club_room', { clubId: clubSlug, role: 'PLAYER' });
@@ -93,6 +129,10 @@ function PlayerScreen() {
       socket.off('state_update', setState);
       socket.off('player_joined');
       socket.off('error');
+      socket.off('gps_failed');
+      socket.off('approval_required');
+      socket.off('approval_denied');
+      socket.off('player_removed');
       socket.off('connect', onConnect);
     };
   }, [clubSlug]);
@@ -147,6 +187,9 @@ function PlayerScreen() {
     e.preventDefault();
     if (!name.trim()) return setErrorMsg('Name is required');
     setIsJoining(true);
+    setRemovedMessage('');
+    setGpsFailed(false);
+    setApprovalMessage('');
 
     navigator.geolocation.getCurrentPosition(
       (pos) => {
@@ -161,6 +204,28 @@ function PlayerScreen() {
         console.warn("Geolocation failed or denied. Proceeding with dummy coords.", err);
         socket.emit('join_player', {
           name, level, gender, lat: 0, lng: 0, customAvatar: avatarPreview
+        });
+      }
+    );
+  };
+
+  const handleRequestApproval = () => {
+    setAwaitingApproval(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        socket.emit('request_approval', {
+          name, level, gender,
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          customAvatar: avatarPreview,
+          distance: gpsDistance
+        });
+      },
+      () => {
+        socket.emit('request_approval', {
+          name, level, gender,
+          customAvatar: avatarPreview,
+          distance: gpsDistance
         });
       }
     );
@@ -312,8 +377,50 @@ function PlayerScreen() {
       <div className="glass-panel" style={{ width: '100%', maxWidth: '500px', textAlign: 'center', WebkitOverflowScrolling: 'touch', maxHeight: '95vh', overflowY: 'auto' }}>
         <h2 className="mb-4">{state.clubName}</h2>
         {errorMsg && <div className="mb-4 animate-fade-in" style={{ color: 'var(--danger)', background: 'rgba(239, 68, 68, 0.1)', padding: '10px', borderRadius: '8px' }}>{errorMsg}</div>}
+        {removedMessage && <div className="mb-4 animate-fade-in" style={{ color: '#ffb400', background: 'rgba(255, 180, 0, 0.1)', padding: '10px', borderRadius: '8px', border: '1px solid rgba(255, 180, 0, 0.3)' }}>{removedMessage}</div>}
 
         {!hasJoined ? (
+          // Check if we need to show GPS failed / approval request screen
+          (gpsFailed || approvalMessage) && !awaitingApproval ? (
+            <div className="animate-fade-in text-center">
+              <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>{gpsFailed ? '📍' : '🔒'}</div>
+              <h3 style={{ marginBottom: '0.5rem' }}>{gpsFailed ? 'GPS Verification Failed' : 'Admin Approval Required'}</h3>
+              <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem', fontSize: '0.9rem' }}>
+                {gpsFailed 
+                  ? `You are ${gpsDistance}km away from the club. The maximum distance is 2km.`
+                  : approvalMessage}
+              </p>
+              <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem', fontSize: '0.85rem' }}>
+                You can request the admin to approve your entry.
+              </p>
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => { setGpsFailed(false); setApprovalMessage(''); }}>Back</button>
+                <button className="btn btn-primary" style={{ flex: 2 }} onClick={handleRequestApproval}>📩 Request Admin Approval</button>
+              </div>
+            </div>
+          ) : awaitingApproval ? (
+            <div className="animate-fade-in text-center">
+              <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>⏳</div>
+              <h3 style={{ marginBottom: '0.5rem' }}>Waiting for Admin Approval</h3>
+              <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem', fontSize: '0.9rem' }}>
+                Your request has been sent. The admin will approve or deny your entry.
+              </p>
+              <div style={{
+                padding: '12px',
+                background: 'rgba(255, 180, 0, 0.1)',
+                border: '1px solid rgba(255, 180, 0, 0.3)',
+                borderRadius: '8px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+                justifyContent: 'center'
+              }}>
+                <div className="loading-spinner" style={{ width: '20px', height: '20px', border: '2px solid rgba(255,180,0,0.3)', borderTopColor: '#ffb400', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+                <span style={{ color: '#ffb400', fontSize: '0.9rem' }}>Pending...</span>
+              </div>
+              <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+            </div>
+          ) : (
           !pinVerified ? (
             // Kahoot-style Step 1: PIN
             <form onSubmit={handleVerifyPin} className="animate-fade-in text-left">
@@ -368,7 +475,7 @@ function PlayerScreen() {
                 <button type="submit" className="btn btn-primary" style={{ flex: 2 }} disabled={isJoining}>{isJoining ? 'Joining...' : 'Enter Session'}</button>
               </div>
             </form>
-          )
+          ))
         ) : (
           <div className="animate-fade-in">
             {state.players[playerData.id] && (

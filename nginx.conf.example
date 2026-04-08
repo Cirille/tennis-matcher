@@ -1,34 +1,76 @@
-# Rate Limiting Zone setup (DDoS protection)
-# Creates a zone allowing 5 requests per second per IP, with a 10MB memory cache for tracking IPs.
+# ============================================
+# Tennis Matcher - Nginx Configuration
+# ============================================
+
+# Rate Limiting Zones
+# General API: 5 requests/sec per IP (handles normal browsing)
 limit_req_zone $binary_remote_addr zone=api_limit:10m rate=5r/s;
+# Login/Auth: 1 request/sec per IP (strict — prevents brute force)
+limit_req_zone $binary_remote_addr zone=login_limit:10m rate=1r/s;
+# Socket.io: 10 requests/sec per IP (WebSocket handshakes + polling fallback)
+limit_req_zone $binary_remote_addr zone=socket_limit:10m rate=10r/s;
 
 server {
     listen 80;
-    server_name yourdomain.com www.yourdomain.com; # REPLACE with your actual domain or server IP
+    server_name yourdomain.com www.yourdomain.com; # REPLACE with your actual domain
 
     # Serve the built React frontend
-    # REPLACE with the absolute path to your built React client folder (e.g., /var/www/tennis-matcher/client/build)
-    root /absolute/path/to/tennis-matcher/client/build;
+    # REPLACE with the absolute path to your built React client folder
+    root /absolute/path/to/tennis-matcher/client/dist;
     index index.html;
 
+    # React Router — fallback all non-file requests to index.html
     location / {
-        # If the file isn't found, fallback to index.html (required for React Router single-page apps)
         try_files $uri /index.html;
     }
 
-    # Proxy Socket.io requests to your Node.js Backend (Running on Port 4000)
-    location /socket.io/ {
-        # Apply the rate limit here. "burst=20" allows up to 20 fast requests in a burst before rejecting.
-        limit_req zone=api_limit burst=20 nodelay;
+    # ---- Login & PIN verification (strictest limit) ----
+    # 1 req/sec, burst of 5 — blocks brute force password/PIN guessing
+    location /api/login {
+        limit_req zone=login_limit burst=5 nodelay;
+        limit_req_status 429;
 
-        proxy_pass http://127.0.0.1:4000; # Forward it to your local Node.js server
-        
-        # Essential parameters for WebSockets to work properly across Nginx
+        proxy_pass http://127.0.0.1:4000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    location ~ ^/api/clubs/.+/verify-pin$ {
+        limit_req zone=login_limit burst=5 nodelay;
+        limit_req_status 429;
+
+        proxy_pass http://127.0.0.1:4000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    # ---- General API routes (moderate limit) ----
+    # 5 req/sec, burst of 10 — normal API usage
+    location /api/ {
+        limit_req zone=api_limit burst=10 nodelay;
+        limit_req_status 429;
+
+        proxy_pass http://127.0.0.1:4000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    # ---- Socket.io (WebSocket + polling) ----
+    # 10 req/sec, burst of 20 — allows WebSocket handshake + reconnects
+    location /socket.io/ {
+        limit_req zone=socket_limit burst=20 nodelay;
+        limit_req_status 429;
+
+        proxy_pass http://127.0.0.1:4000;
+
+        # Required for WebSocket upgrade
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
-        
-        # Forward the original user's IP address instead of Nginx's local IP
+
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

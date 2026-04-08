@@ -10,11 +10,12 @@ const { autoMatchmake } = require('./matchmaker');
 const db = require('./db');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const logger = require('./logger');
 
 const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:5173';
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) {
-  console.error('FATAL: JWT_SECRET environment variable is not set. Create a .env file with JWT_SECRET=your_secret_key');
+  logger.error('FATAL: JWT_SECRET environment variable is not set. Create a .env file with JWT_SECRET=your_secret_key');
   process.exit(1);
 }
 
@@ -174,16 +175,28 @@ const resolveMapLink = async (urlStr) => {
     if (directCoords) return directCoords;
     return new Promise((resolve) => {
       const reqModule = urlStr.startsWith('https') ? https : http;
-      reqModule.get(urlStr, (res) => {
+      const request = reqModule.get(urlStr, { timeout: 3000 }, (res) => {
         if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
           const loc = res.headers.location;
           const coords = extractLatLng(loc);
           if (coords) return resolve(coords);
         }
         resolve(null);
-      }).on('error', () => resolve(null));
+      });
+      request.on('error', (e) => {
+        logger.error(`Map resolution error: ${e.message}`);
+        resolve(null);
+      });
+      request.on('timeout', () => {
+        request.destroy();
+        logger.warn(`Map resolution request timed out for url: ${urlStr}`);
+        resolve(null);
+      });
     });
-  } catch (e) { return null; }
+  } catch (e) { 
+    logger.error(`Map resolution exception: ${e.message}`);
+    return null; 
+  }
 };
 
 const getDistanceFromLatLonInKm = (lat1, lon1, lat2, lon2) => {
@@ -197,7 +210,7 @@ const getDistanceFromLatLonInKm = (lat1, lon1, lat2, lon2) => {
 
 // Core Sockets
 io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
+  logger.info(`User connected: ${socket.id}`);
 
   // 1. Join isolated Room
   socket.on('join_club_room', ({ clubId, role, token }) => {
@@ -516,7 +529,7 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     if (!socket.clubId) return; // user dropped before securely joining a room
-    console.log(`User ${socket.id} disconnected from room ${socket.clubId}`);
+    logger.info(`User ${socket.id} disconnected from room ${socket.clubId}`);
     const state = getClubState(socket.clubId);
     const sessionId = getSessionIdBySocket(socket.id, state);
     if (sessionId && state.players[sessionId]) {
@@ -532,4 +545,4 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 4000;
-server.listen(PORT, () => console.log(`Tennis SaaS Server running natively on multi-tenant port ${PORT}`));
+server.listen(PORT, () => logger.info(`Tennis SaaS Server running natively on multi-tenant port ${PORT}`));

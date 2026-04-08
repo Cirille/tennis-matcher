@@ -1,0 +1,6 @@
+# Application Context
+- This project is a production-grade application that is intended to go live. It is NOT a toy project.
+- ALWAYS prioritize scalability, security, and handling edge cases over quick and dirty solutions.
+- When proposing architecture, design choices, or new features, ensure they are viable for a production multi-tenant SaaS environment.
+- Code should include robust error handling, avoid "placeholder" magic where possible, and follow standard best practices.
+- Designs for web and UI should be rich, modern, responsive, and dynamic, adhering to premium product standards.

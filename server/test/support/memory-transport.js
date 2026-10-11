@@ -98,12 +98,12 @@ class MemorySocketServer extends EventEmitter {
   close(done) { done(); }
 }
 
-function request(app, path, { method = 'GET', body } = {}) {
+function request(app, path, { method = 'GET', body, headers = {} } = {}) {
   return new Promise((resolve, reject) => {
     const req = new IncomingMessage(new PassThrough());
     req.method = method;
     req.url = path;
-    req.headers = { host: 'test.local' };
+    req.headers = { host: 'test.local', ...headers };
     const payload = body === undefined ? null : Buffer.from(JSON.stringify(body));
     if (payload) {
       req.headers['content-type'] = 'application/json';

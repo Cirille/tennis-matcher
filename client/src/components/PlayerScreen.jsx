@@ -7,7 +7,8 @@ import { connectToClub } from '../clubConnection';
 import { readPlayerSession, savePlayerSession, clearPlayerSession } from '../playerSession';
 import { getPlayerCoordinates } from '../playerLocation';
 
-const API_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:4000';
+import { API_URL } from '../api';
+import { Avatar, Brand, Icon } from './UI';
 
 function PlayerScreen() {
   const navigate = useNavigate();
@@ -38,7 +39,7 @@ function PlayerScreen() {
   const [pin, setPin] = useState('');
   const [name, setName] = useState('');
   const [level, setLevel] = useState('5');
-  const [gender, setGender] = useState('M');
+  const [gender, setGender] = useState('Other');
 
   // App State
   const [state, setState] = useState({
@@ -100,6 +101,7 @@ function PlayerScreen() {
         setGpsFailed(false);
         setApprovalMessage('');
         setRoomReady(false);
+        setState(s => ({ ...s, players: {}, courts: [], idleQueue: [], matchHistory: [] }));
       }
       setErrorMsg(msg);
       setIsJoining(false);
@@ -194,7 +196,7 @@ function PlayerScreen() {
         setPinVerified(true);
         setErrorMsg('');
       } else {
-        setErrorMsg('Invalid PIN. Please ask the club admin.');
+        setErrorMsg(data.error || 'Invalid PIN. Please ask the club admin.');
       }
     } catch {
       setErrorMsg('Verification failed.');
@@ -229,6 +231,7 @@ function PlayerScreen() {
 
   const handleJoin = async (e) => {
     e.preventDefault();
+    if (!roomReady || !socket.connected) return setErrorMsg('Reconnect before joining.');
     if (!name.trim()) return setErrorMsg('Name is required');
     setIsJoining(true);
     setRemovedMessage('');
@@ -242,16 +245,19 @@ function PlayerScreen() {
   };
 
   const handleRequestApproval = () => {
+    if (!roomReady || !socket.connected) return setErrorMsg('Reconnect before requesting approval.');
     setAwaitingApproval(true);
     socket.emit('request_approval', { name, level, gender, customAvatar: avatarPreview });
   };
 
-  const handleExit = () => {
+  const handleExit = async () => {
     if (state.gameStarted) {
       setErrorMsg("Game is in progress, cannot exit.");
       return;
     }
-    socket.emit('player_exit');
+    if (!roomReady || !socket.connected) return setErrorMsg('Reconnect before leaving the session.');
+    const result = await new Promise(resolve => socket.timeout(7000).emit('player_exit', {}, (err, response) => resolve(err ? { error: 'Could not confirm that you left. Please reconnect and check.' } : response)));
+    if (!result?.success) return setErrorMsg(result?.error || 'Could not leave the session.');
     joinAttempt.current += 1;
     clearPlayerSession(clubSlug);
     setAccessToken('');
@@ -261,262 +267,39 @@ function PlayerScreen() {
     setPlayerData(null);
   };
 
-  let statusText = "You are in the setup phase.";
-  let courtInfo = null;
-
-  if (hasJoined && playerData) {
-    const currentPlayer = state.players[playerData.id];
-    if (!currentPlayer) {
-      statusText = "You have been disconnected.";
-    } else if (!currentPlayer.courtId) {
-      statusText = `Waiting in the Idle Queue.`;
-    } else {
-      const court = state.courts.find(c => c.id === currentPlayer.courtId);
-      if (court) {
-        statusText = `Assigned to Court ${court.number} (${court.type}) - Side ${currentPlayer.side}`;
-        courtInfo = court;
-      }
-    }
-  }
-
-  const renderPlayerBadge = (p, isMe = false) => {
-    if (!p) return null;
-    return (
-      <div 
-        key={p.id} 
-        style={{ 
-          background: isMe ? 'rgba(204, 255, 0, 0.9)' : 'rgba(0,0,0,0.6)', 
-          color: isMe ? '#000' : '#fff',
-          padding: '6px 10px', 
-          borderRadius: '20px',
-          marginBottom: '6px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '8px',
-          border: isMe ? '2px solid #fff' : '1px solid rgba(255,255,255,0.3)',
-          boxShadow: '0 2px 4px rgba(0,0,0,0.4)',
-          fontSize: '0.85rem',
-          fontWeight: isMe ? 'bold' : 'normal'
-        }}
-      >
-        <img src={p.avatar} alt="avatar" width="24" height="24" style={{borderRadius: '50%', minWidth: '24px', minHeight: '24px', flexShrink: 0, objectFit: 'cover'}} />
-        <div style={{ textShadow: isMe ? 'none' : '1px 1px 2px rgba(0,0,0,0.6)' }}>
-          <div>{p.name} {isMe && '(You)'}</div>
-        </div>
-      </div>
-    );
+  const currentPlayer = playerData && state.players[playerData.id];
+  const courtInfo = currentPlayer?.courtId && state.courts.find(court => court.id === currentPlayer.courtId);
+  const badge = id => {
+    const player = state.players[id];
+    if (!player) return null;
+    return <div className={`player-badge ${id === playerData?.id ? 'is-me' : ''}`} key={id}><Avatar player={player} /><span>{player.name}{id === playerData?.id && <small>You</small>}</span></div>;
   };
+  const renderCourt = court => <article className={`court-card ${court.type === 'Clay' ? 'clay' : ''}`} key={court.id}><header><div className="court-title"><span className="court-number">{String(court.number).padStart(2, '0')}</span><div><h3>Court {court.number}</h3><span className="court-type">{court.type} court</span></div></div>{court.id === courtInfo?.id && <span className="badge">Your court</span>}</header><TennisCourt type={court.type}>{['A', 'B'].map(side => <div className="court-side" key={side}><span className="side-label">SIDE {side}{court.id === courtInfo?.id && side === currentPlayer?.side ? ' · YOUR TEAM' : ''}</span>{court[`side${side}`].map(badge)}{!court[`side${side}`].length && <span className="empty-slot">Waiting for players</span>}</div>)}</TennisCourt></article>;
 
-  const renderTeammates = () => {
-    if (!courtInfo) return null;
-    const currentPlayer = state.players[playerData.id];
-    if (!currentPlayer) return null;
-
-    const mySideArray = currentPlayer.side === 'A' ? courtInfo.sideA : courtInfo.sideB;
-    const otherSideArray = currentPlayer.side === 'A' ? courtInfo.sideB : courtInfo.sideA;
-
-    return (
-      <div className="mt-4 animate-fade-in" style={{ borderRadius: '12px', overflow: 'hidden', border: `2px solid ${courtInfo.type === 'Clay' ? 'var(--clay-court)' : 'var(--hard-court)'}` }}>
-        <TennisCourt type={courtInfo.type}>
-          <div style={{ flex: 1, padding: '20px 10px 20px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
-            {mySideArray.map(id => renderPlayerBadge(state.players[id], id === playerData.id))}
-            {mySideArray.length === 0 && <div style={{color: 'rgba(255,255,255,0.7)', fontSize: '0.9rem', textShadow: '1px 1px 2px black'}}>Waiting...</div>}
-          </div>
-          <div style={{ flex: 1, padding: '20px 24px 20px 10px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
-            {otherSideArray.map(id => renderPlayerBadge(state.players[id]))}
-            {otherSideArray.length === 0 && <div style={{color: 'rgba(255,255,255,0.7)', fontSize: '0.9rem', textShadow: '1px 1px 2px black'}}>Waiting...</div>}
-          </div>
-        </TennisCourt>
-      </div>
-    );
-  };
-
-  const renderClubStatus = () => {
-    return (
-      <div className="mt-4 animate-fade-in" style={{ textAlign: 'left' }}>
-        <h4 className="mb-2" style={{color: 'var(--accent-tennis)'}}>Idle Queue ({state.idleQueue.length}):</h4>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '1.5rem', background: 'rgba(0,0,0,0.2)', padding: '10px', borderRadius: '8px' }}>
-          {state.idleQueue.length > 0 ? state.idleQueue.map(id => {
-            const p = state.players[id];
-            if (!p) return null;
-            return (
-              <div key={id} style={{ display: 'flex', alignItems: 'center', gap: '6px', background: id === playerData.id ? 'rgba(204, 255, 0, 0.2)' : 'rgba(255,255,255,0.1)', padding: '4px 8px', borderRadius: '12px', fontSize: '0.85rem', border: id === playerData.id ? '1px solid var(--accent-tennis)' : '1px solid transparent' }}>
-                <img src={p.avatar} alt="avatar" width="20" height="20" style={{borderRadius: '50%', minWidth: '20px', minHeight: '20px', flexShrink: 0, objectFit: 'cover'}} />
-                <span style={{color: id === playerData.id ? 'var(--accent-tennis)' : '#fff', fontWeight: id === playerData.id ? 'bold' : 'normal'}}>{p.name} {id === playerData.id && '(You)'}</span>
-              </div>
-            );
-          }) : <div style={{color: 'var(--text-secondary)', fontSize: '0.85rem'}}>No one is waiting.</div>}
-        </div>
-
-        <h4 className="mb-2" style={{color: 'var(--accent-tennis)'}}>Active Courts ({state.courts.length}):</h4>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          {state.courts.length > 0 ? state.courts.map(court => (
-            <div key={court.id} style={{ borderRadius: '8px', overflow: 'hidden', border: `1px solid ${court.type === 'Clay' ? 'var(--clay-court)' : 'var(--hard-court)'}` }}>
-              <div style={{ background: court.type === 'Clay' ? 'var(--clay-court)' : 'var(--hard-court)', padding: '6px', textAlign: 'center', fontSize: '0.9rem', fontWeight: 'bold' }}>
-                Court {court.number} ({court.type})
-              </div>
-              <div style={{ display: 'flex', background: 'rgba(0,0,0,0.4)', padding: '10px', gap: '10px' }}>
-                <div style={{ flex: 1, borderRight: '1px solid rgba(255,255,255,0.1)', paddingRight: '10px' }}>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '6px', textAlign: 'center' }}>Side A</div>
-                  {court.sideA.map(id => {
-                    const p = state.players[id];
-                    if (!p) return null;
-                    return (
-                      <div key={id} style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px', fontSize: '0.85rem' }}>
-                        <img src={p.avatar} alt="avatar" width="18" height="18" style={{borderRadius: '50%', minWidth: '18px', minHeight: '18px', flexShrink: 0, objectFit: 'cover'}} />
-                        <span>{p.name}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-                <div style={{ flex: 1, paddingLeft: '10px' }}>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '6px', textAlign: 'center' }}>Side B</div>
-                  {court.sideB.map(id => {
-                    const p = state.players[id];
-                    if (!p) return null;
-                    return (
-                      <div key={id} style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px', fontSize: '0.85rem' }}>
-                        <img src={p.avatar} alt="avatar" width="18" height="18" style={{borderRadius: '50%', minWidth: '18px', minHeight: '18px', flexShrink: 0, objectFit: 'cover'}} />
-                        <span>{p.name}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          )) : <div style={{color: 'var(--text-secondary)', fontSize: '0.85rem'}}>No active courts.</div>}
-        </div>
-      </div>
-    );
-  };
-
-  return (
-    <div className="container" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh', padding: '1rem' }}>
-      <div className="glass-panel" style={{ width: '100%', maxWidth: '500px', textAlign: 'center', WebkitOverflowScrolling: 'touch', maxHeight: '95vh', overflowY: 'auto' }}>
-        <h2 className="mb-4">{state.clubName}</h2>
-        {errorMsg && <div className="mb-4 animate-fade-in" style={{ color: 'var(--danger)', background: 'rgba(239, 68, 68, 0.1)', padding: '10px', borderRadius: '8px' }}>{errorMsg}</div>}
-        {removedMessage && <div className="mb-4 animate-fade-in" style={{ color: '#ffb400', background: 'rgba(255, 180, 0, 0.1)', padding: '10px', borderRadius: '8px', border: '1px solid rgba(255, 180, 0, 0.3)' }}>{removedMessage}</div>}
-
-        {!hasJoined ? (
-          // Check if we need to show GPS failed / approval request screen
-          (gpsFailed || approvalMessage) && !awaitingApproval ? (
-            <div className="animate-fade-in text-center">
-              <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>{gpsFailed ? '📍' : '🔒'}</div>
-              <h3 style={{ marginBottom: '0.5rem' }}>{gpsFailed ? 'GPS Verification Failed' : 'Admin Approval Required'}</h3>
-              <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem', fontSize: '0.9rem' }}>
-                {gpsFailed 
-                  ? `You are ${gpsDistance}km away from the club. The maximum distance is 2km.`
-                  : approvalMessage}
-              </p>
-              <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem', fontSize: '0.85rem' }}>
-                You can request the admin to approve your entry.
-              </p>
-              <div style={{ display: 'flex', gap: '10px' }}>
-                <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => { setGpsFailed(false); setApprovalMessage(''); }}>Back</button>
-                <button className="btn btn-primary" style={{ flex: 2 }} onClick={handleRequestApproval} disabled={!roomReady}>📩 Request Admin Approval</button>
-              </div>
-            </div>
-          ) : awaitingApproval ? (
-            <div className="animate-fade-in text-center">
-              <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>⏳</div>
-              <h3 style={{ marginBottom: '0.5rem' }}>Waiting for Admin Approval</h3>
-              <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem', fontSize: '0.9rem' }}>
-                Your request has been sent. The admin will approve or deny your entry.
-              </p>
-              <div style={{
-                padding: '12px',
-                background: 'rgba(255, 180, 0, 0.1)',
-                border: '1px solid rgba(255, 180, 0, 0.3)',
-                borderRadius: '8px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '10px',
-                justifyContent: 'center'
-              }}>
-                <div className="loading-spinner" style={{ width: '20px', height: '20px', border: '2px solid rgba(255,180,0,0.3)', borderTopColor: '#ffb400', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
-                <span style={{ color: '#ffb400', fontSize: '0.9rem' }}>Pending...</span>
-              </div>
-              <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-            </div>
-          ) : (
-          !pinVerified ? (
-            // Kahoot-style Step 1: PIN
-            <form onSubmit={handleVerifyPin} className="animate-fade-in text-left">
-              <div className="form-group">
-                <label className="form-label">Enter Club PIN</label>
-                <input
-                  type="text"
-                  className="form-control"
-                  value={pin}
-                  onChange={(e) => setPin(e.target.value)}
-                  placeholder="Ask the Admin for the PIN"
-                  required
-                />
-              </div>
-              <div className="mt-4 flex gap-4">
-                <button type="button" className="btn btn-secondary" style={{ flex: 1 }} onClick={() => navigate('/')}>Cancel</button>
-                <button type="submit" className="btn btn-primary" style={{ flex: 2 }} disabled={isVerifying}>{isVerifying ? 'Checking...' : 'Verify PIN'}</button>
-              </div>
-            </form>
-          ) : (
-            // Kahoot-style Step 2: Player Details
-            <form onSubmit={handleJoin} className="animate-fade-in text-left">
-              <div className="form-group">
-                <label className="form-label">Player Name</label>
-                <input type="text" className="form-control" value={name} onChange={(e) => setName(e.target.value)} placeholder="Enter your name" required />
-              </div>
-              <div className="form-group">
-                <label className="form-label">Tennis Level (1 = Best, 10 = Beginner)</label>
-                <select className="form-control" value={level} onChange={(e) => setLevel(e.target.value)}>
-                  {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(l => (
-                    <option key={l} value={l}>{l}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="form-group">
-                <label className="form-label">Gender</label>
-                <select className="form-control" value={gender} onChange={(e) => setGender(e.target.value)}>
-                  <option value="M">Male</option><option value="F">Female</option><option value="Other">Other</option>
-                </select>
-              </div>
-              <div className="form-group" style={{ textAlign: 'center' }}>
-                <label className="form-label" style={{ textAlign: 'left' }}>Profile Picture (Optional)</label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
-                  <div style={{ flexShrink: 0, width: '60px', height: '60px', borderRadius: '50%', background: 'rgba(0,0,0,0.3)', border: '2px solid var(--accent-tennis)', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    {avatarPreview ? <img src={avatarPreview} alt="preview" style={{width: '100%', height: '100%', objectFit: 'cover'}} /> : <span style={{fontSize: '0.8rem', color: 'var(--text-secondary)'}}>None</span>}
-                  </div>
-                  <input type="file" accept="image/png, image/jpeg, image/gif, image/webp" onChange={handleImageUpload} style={{ fontSize: '0.85rem', width: '100%', color: 'var(--text-primary)' }} />
-                </div>
-              </div>
-              <div className="mt-4 flex gap-4">
-                <button type="button" className="btn btn-secondary" style={{ flex: 1 }} onClick={() => setPinVerified(false)}>Back</button>
-                <button type="submit" className="btn btn-primary" style={{ flex: 2 }} disabled={isJoining || !roomReady}>{isJoining ? 'Joining...' : !roomReady ? 'Connecting...' : 'Enter Session'}</button>
-              </div>
-            </form>
-          ))
-        ) : (
-          <div className="animate-fade-in">
-            {state.players[playerData.id] && (
-              <img src={state.players[playerData.id].avatar} alt="Profile" style={{ width: '80px', height: '80px', borderRadius: '50%', marginBottom: '1rem', border: '2px solid var(--accent-tennis)' }} />
-            )}
-            <h3>Welcome, {state.players[playerData.id]?.name}</h3>
-
-            <div className="mt-4" style={{ padding: '1rem', background: 'rgba(0,0,0,0.3)', borderRadius: '8px', border: '1px solid var(--glass-border)' }}>
-              <p style={{ fontWeight: '500', fontSize: '1.1rem' }}>{statusText}</p>
-              {state.gameStarted && <p style={{ color: 'var(--accent-tennis)', marginTop: '0.5rem', fontSize: '0.85rem' }}>🎾 Game is in progress.</p>}
-              {courtInfo ? renderTeammates() : renderClubStatus()}
-            </div>
-
-            <MatchHistory matchHistory={state.matchHistory} players={state.players} />
-
-            <button className="btn btn-danger mt-4" style={{ width: '100%' }} onClick={handleExit} disabled={state.gameStarted}>
-              Exit Session
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
+  return <div className="player-page"><header className="public-header"><Brand /><span className="player-header-note">See you on court.</span></header><main className={`player-main ${hasJoined ? 'player-joined' : ''}`}>
+    <div className="player-club-heading"><span className="icon-tile"><Icon name="court" size={23} /></span><p className="eyebrow">YOUR CLUBHOUSE</p><h1>{state.clubName}</h1>{hasJoined ? <span className={roomReady ? 'connection-good' : 'connection-offline'} role="status"><span className="status-dot" />{roomReady ? 'You’re connected to the session' : 'Reconnecting to your session…'}</span> : <p className="muted">A good match starts with a hello.</p>}</div>
+    {errorMsg && <div className="error-message" role="alert">{errorMsg}</div>}{removedMessage && <div className="notice" role="status">{removedMessage}</div>}
+    {!hasJoined ? <section className="panel checkin-card">
+      {(gpsFailed || approvalMessage) && !awaitingApproval ? <div className="approval-screen"><span className="icon-tile icon-tile-large"><Icon name={gpsFailed ? 'pin' : 'shield'} size={28} /></span><h2>A quick check with your club.</h2><p className="muted">{gpsFailed ? gpsDistance != null ? `You appear to be ${gpsDistance} km from the club. Check-in is available within 2 km.` : 'We couldn’t verify that you’re at the club.' : approvalMessage}</p><p className="muted">Ask a staff member to approve your entry.</p><div className="form-actions"><button className="btn btn-secondary" onClick={() => { setGpsFailed(false); setApprovalMessage(''); }}>Back</button><button className="btn btn-primary" onClick={handleRequestApproval} disabled={!roomReady}>Request approval<Icon name="arrow" /></button></div></div>
+      : awaitingApproval ? <div className="approval-screen" role="status"><span className="icon-tile icon-tile-large"><Icon name="clock" size={28} /></span><h2>You’re on the list.</h2><p className="muted">Your request is with the club staff. Keep this page open; we’ll let you in as soon as they approve it.</p><span className="badge"><span className="status-dot" />Waiting for approval</span></div>
+      : <><ol className="checkin-steps" aria-label="Check-in progress"><li className={!pinVerified ? 'current' : 'complete'} aria-current={!pinVerified ? 'step' : undefined}><span>{pinVerified ? <Icon name="check" size={14} /> : '1'}</span>Club PIN</li><li className={pinVerified ? 'current' : ''} aria-current={pinVerified ? 'step' : undefined}><span>2</span>Your details</li></ol>
+        {!pinVerified ? <><h2>Welcome to the club.</h2><p className="muted">Enter the PIN shared by your organiser to join today’s session.</p><form className="form-stack" onSubmit={handleVerifyPin}><label>Club PIN<input type="text" className="form-control pin-input" value={pin} onChange={e => setPin(e.target.value)} inputMode="numeric" pattern="[0-9]{4,12}" maxLength={12} placeholder="Enter PIN" required autoComplete="off" /></label><button type="submit" className="btn btn-primary btn-block" disabled={isVerifying}>{isVerifying ? 'Checking…' : 'Continue'}<Icon name="arrow" /></button><button type="button" className="text-button" onClick={() => navigate('/')}>Find a different club</button></form><p className="checkin-note"><Icon name="shield" size={16} />Your club’s private session. No account needed.</p></>
+        : <><h2>Let’s put a name to your game.</h2><p className="muted">A few details help your organiser find you a match.</p><form className="form-stack" onSubmit={handleJoin}>
+          <label>Player name<input type="text" className="form-control" value={name} onChange={e => setName(e.target.value)} placeholder="What should we call you?" maxLength={80} autoComplete="given-name" required /></label>
+          <label>Tennis level<select className="form-control" value={level} onChange={e => setLevel(e.target.value)}>{[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(l => <option key={l} value={l}>{l}{l === 1 ? ' — Best' : l === 10 ? ' — Beginner' : ''}</option>)}</select><span className="field-hint">1 is strongest, 10 is beginner. Only staff see your level.</span></label>
+          <label>Gender <span className="label-optional">Optional · visible to staff</span><select className="form-control" value={gender} onChange={e => setGender(e.target.value)}><option value="Other">Prefer not to say / other</option><option value="M">Male</option><option value="F">Female</option></select></label>
+          <div className="photo-field"><Avatar player={{ name, avatar: avatarPreview }} large /><label>Profile photo <span className="label-optional">Optional</span><input type="file" accept="image/png, image/jpeg, image/gif, image/webp" onChange={handleImageUpload} /><span className="field-hint">Choose an image up to 5 MB.</span></label></div>
+          <div className="privacy-note"><p>Your name, photo and court assignment are shared with admitted players and club staff.</p><details><summary>How your details are used</summary><p>Staff can see your level and optional gender. Location checks proximity; exact coordinates are not saved. Archived player details and history are deleted after 90 days. Ask a club owner about earlier deletion.</p></details></div>
+          <div className="form-actions"><button type="button" className="btn btn-secondary" onClick={() => setPinVerified(false)}><Icon name="back" />Back</button><button type="submit" className="btn btn-primary" disabled={isJoining || !roomReady}>{isJoining ? 'Joining…' : !roomReady ? 'Connecting…' : 'Join session'}<Icon name="arrow" /></button></div>
+        </form></>}
+      </>}
+    </section> : <>
+      {!roomReady && <p className="notice">Reconnecting… Court assignments may have changed. Please wait for live updates.</p>}
+      <section className="player-welcome"><div className="section-heading"><Avatar player={currentPlayer || playerData} large /><div><p className="eyebrow">YOU’RE CHECKED IN</p><h2>Hello, {currentPlayer?.name || playerData?.name}.</h2></div></div><div className="player-assignment"><span className="assignment-icon"><Icon name={courtInfo ? 'court' : 'coffee'} size={28} /></span><div><h3>{courtInfo ? `Court ${courtInfo.number} · Side ${currentPlayer.side}` : currentPlayer?.available === false ? 'Enjoy a breather.' : 'Your next match is on its way.'}</h3><p>{courtInfo ? state.gameStarted ? 'The round is in play. Have a great match!' : 'You’re in the line-up. Wait for staff to start the round.' : currentPlayer?.available === false ? 'Ask a staff member when you’re ready to play again.' : 'Your organiser will assign your court. You can stay right here.'}</p></div></div></section>
+      {courtInfo ? <section className="player-court-section"><div className="section-heading spread"><h2>Your match</h2><span className="badge">{state.gameStarted ? 'In play' : 'Getting ready'}</span></div>{renderCourt(courtInfo)}</section> : <section className="player-court-section"><div className="section-heading spread"><h2>On the sidelines</h2><span className="count-pill">{state.idleQueue.length}</span></div><div className="player-waiting-list">{state.idleQueue.map(badge)}{!state.idleQueue.length && <p className="muted">No players waiting.</p>}</div><h2 className="section-title">Around the courts</h2><div className="player-courts">{state.courts.map(renderCourt)}{!state.courts.length && <p className="muted">Staff are getting the courts ready.</p>}</div></section>}
+      <MatchHistory matchHistory={state.matchHistory} players={state.players} /><div className="player-exit"><button className="btn btn-secondary" onClick={handleExit} disabled={state.gameStarted || !roomReady}><Icon name="logout" />Leave session</button><p className="field-hint">{state.gameStarted ? 'You can leave when the current round ends.' : 'Heading home? Let your organiser know by checking out.'}</p></div>
+    </>}
+    <p className="player-footer">Meet. Match. Play.</p></main></div>;
 }
 
 export default PlayerScreen;

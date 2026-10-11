@@ -33,6 +33,10 @@ function defineSessionTests({ network = false } = {}) {
   }
 
   function emitAck(socket, event, data) {
+    if (['update_club_name', 'update_club_location', 'admin_remove_player', 'admin_approve_player', 'toggle_require_approval'].includes(event)) {
+      data = { id: require('node:crypto').randomUUID(), action: event, value: data, revision: socket.lastState?.revision ?? 0, sessionId: socket.lastState?.sessionId || 'missing' };
+      event = 'admin_command';
+    }
     return new Promise((resolve, reject) => {
       socket.timeout(3000).emit(event, data, (err, result) => err ? reject(err) : resolve(result));
     });
@@ -50,6 +54,8 @@ function defineSessionTests({ network = false } = {}) {
     await new Promise((resolve, reject) => db.exec(`
       CREATE TABLE Clubs (id TEXT PRIMARY KEY, name TEXT, pin TEXT, mapUrl TEXT, lat REAL, lng REAL);
       CREATE TABLE Admins (id INTEGER PRIMARY KEY, email TEXT UNIQUE, password_hash TEXT, role TEXT, clubId TEXT);
+      INSERT INTO Admins VALUES (1, 'owner-a@test.local', NULL, 'ADMIN', 'club-a');
+      INSERT INTO Admins VALUES (2, 'owner-b@test.local', NULL, 'ADMIN', 'club-b');
       INSERT INTO Clubs VALUES ('club-a', 'Club A', '1234', 'https://www.google.com/maps/@52.1,4.3,15z', 52.1, 4.3);
       INSERT INTO Clubs VALUES ('club-b', 'Club B', '5678', NULL, NULL, NULL);
       INSERT INTO Clubs VALUES ('equator', 'Equator', '0000', 'https://www.google.com/maps/@0,0,15z', 0, 0);
@@ -71,9 +77,10 @@ function defineSessionTests({ network = false } = {}) {
       if (memory) return memoryRequest(application.app, path, options);
       const response = await fetch(url + path, {
         method: options.method || 'GET',
-        ...(options.body === undefined ? {} : {
-          headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(options.body)
-        })
+        // Every fixture owns a short-lived server. Do not reuse an HTTP pool
+        // connection if Windows quickly reallocates a closed fixture's port.
+        headers: { Connection: 'close', ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+        ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) })
       });
       return { status: response.status, ...await response.json() };
     };
@@ -96,8 +103,8 @@ function defineSessionTests({ network = false } = {}) {
     };
   }
 
-  const adminAuth = (clubId = 'club-a', role = 'ADMIN') => ({
-    clubId, role: 'ADMIN', token: jwt.sign({ role, clubId }, secret, { expiresIn: '1h' })
+  const adminAuth = (clubId = 'club-a', role = 'OWNER') => ({
+    clubId, role: 'ADMIN', token: jwt.sign({ id: clubId === 'club-a' ? 1 : 2, version: 0, role, clubId }, secret, { expiresIn: '1h' })
   });
   async function joinPlayerRoom(f, socket, clubId = 'club-a', pin = '1234') {
     const credentials = await f.pin(clubId, pin);
@@ -107,8 +114,11 @@ function defineSessionTests({ network = false } = {}) {
   }
   async function joinPlayer(socket, details = { ...profile, ...nearClub }) {
     const joined = waitFor(socket, 'player_joined');
+    const updated = waitFor(socket, 'state_update', state => Object.keys(state.players).length > 0);
     socket.emit('join_player', details);
-    return joined;
+    const player = await joined;
+    await updated;
+    return player;
   }
 
   test('PIN verification issues a club-bound credential and rejects a wrong PIN', async t => {
@@ -244,7 +254,7 @@ function defineSessionTests({ network = false } = {}) {
     await joinPlayerRoom(f, original);
     const player = await joinPlayer(original);
     const removed = waitFor(original, 'player_removed');
-    admin.emit('admin_remove_player', { playerId: player.id });
+    await emitAck(admin, 'admin_remove_player', { playerId: player.id });
     await removed;
     const restored = await f.socket();
     const result = await emitAck(restored, 'join_club_room', { clubId: 'club-a', role: 'PLAYER', token: player.sessionToken });
@@ -262,7 +272,7 @@ function defineSessionTests({ network = false } = {}) {
     socket.emit('request_approval', profile);
     const request = (await pending).pendingApprovals[0];
     const joined = waitFor(socket, 'player_joined');
-    admin.emit('admin_approve_player', { requestId: request.id });
+    await emitAck(admin, 'admin_approve_player', { requestId: request.id });
     const player = await joined;
     assert.equal(jwt.verify(player.sessionToken, secret).sub, player.id);
     const restored = await f.socket();
@@ -277,7 +287,7 @@ function defineSessionTests({ network = false } = {}) {
     const socket = await f.socket();
     await joinPlayerRoom(f, socket);
     const changed = waitFor(socket, 'state_update', state => state.requireApproval);
-    admin.emit('toggle_require_approval', true);
+    await emitAck(admin, 'toggle_require_approval', true);
     await changed;
     const required = waitFor(socket, 'approval_required');
     socket.emit('join_player', { ...profile, ...nearClub });
@@ -366,11 +376,11 @@ function defineSessionTests({ network = false } = {}) {
     const admin = await f.socket();
     await emitAck(admin, 'join_club_room', adminAuth());
     const invalid = waitFor(admin, 'error');
-    admin.emit('update_club_location', 'not-a-url');
+    await emitAck(admin, 'update_club_location', 'not-a-url');
     assert.match(await invalid, /Could not extract/);
     assert.equal((await query(f.db, 'SELECT lat FROM Clubs WHERE id = ?', ['club-a'])).lat, nearClub.lat);
     const cleared = waitFor(admin, 'state_update', state => state.clubLat === null);
-    admin.emit('update_club_location', '');
+    await emitAck(admin, 'update_club_location', '');
     await cleared;
     const club = await query(f.db, 'SELECT mapUrl, lat, lng FROM Clubs WHERE id = ?', ['club-a']);
     assert.deepEqual(club, { mapUrl: null, lat: null, lng: null });
@@ -403,7 +413,7 @@ function defineSessionTests({ network = false } = {}) {
     const f = await fixture(t);
     const admin = await f.socket();
     await emitAck(admin, 'join_club_room', adminAuth());
-    await new Promise((resolve, reject) => f.db.exec('DROP TABLE Clubs', err => err ? reject(err) : resolve()));
+    await new Promise((resolve, reject) => f.db.exec("CREATE TRIGGER reject_name BEFORE UPDATE OF name ON Clubs BEGIN SELECT RAISE(ABORT, 'test write failure'); END", err => err ? reject(err) : resolve()));
     const result = await emitAck(admin, 'update_club_name', 'Not saved');
     assert.equal(result.success, false);
     assert.match(result.error, /Failed to save/);

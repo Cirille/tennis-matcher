@@ -5,7 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test test/session.test.js",
+    "test": "node --test test/session.test.js test/matchmaker.test.js",
     "test:integration": "node --test test/integration/session.test.js"
   },
   "keywords": [],

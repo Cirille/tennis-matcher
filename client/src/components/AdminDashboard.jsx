@@ -1,456 +1,151 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { socket } from '../socket';
 import TennisCourt from './TennisCourt';
 import MatchHistory from './MatchHistory';
+import StaffPanel from './StaffPanel';
+import AcceptAccount from './AcceptAccount';
 import { connectToClub } from '../clubConnection';
+import { sendAdminCommand } from '../adminCommand';
+import { api } from '../api';
+import { AuthLayout, Avatar, Brand, Icon } from './UI';
 
-const API_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:4000';
-
-function AdminDashboard() {
-  const navigate = useNavigate();
-  const [token, setToken] = useState(localStorage.getItem('admin_token') || '');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [errorMsg, setErrorMsg] = useState('');
-  const [clubNameDraft, setClubNameDraft] = useState(null);
-  const [mapUrlDraft, setMapUrlDraft] = useState(null);
-
-  const [state, setState] = useState({
-    clubName: '',
-    courts: [],
-    idleQueue: [],
-    players: {},
-    gameStarted: false,
-    clubMapUrl: '',
-    clubLat: null,
-    clubLng: null,
-    matchHistory: [],
-    pendingApprovals: [],
-    requireApproval: false
-  });
-
-  const handleLogout = useCallback(() => {
-    localStorage.removeItem('admin_token');
-    localStorage.removeItem('admin_clubId');
-    setToken('');
-  }, []);
-
-  useEffect(() => {
-    if (token) {
-      const clubId = localStorage.getItem('admin_clubId');
-      const onError = (msg) => {
-        if (msg.includes('Unauthorized')) handleLogout();
-        setErrorMsg(msg);
-      };
-      const onStateUpdate = (updatedState) => { setState(updatedState); };
-      socket.on('state_update', onStateUpdate);
-      socket.on('error', onError);
-      const disconnectClub = connectToClub(socket, { clubId, role: 'ADMIN', token }, {
-        onJoined: () => setErrorMsg(''), onError
-      });
-
-      return () => {
-        disconnectClub();
-        socket.off('state_update', onStateUpdate);
-        socket.off('error', onError);
-      };
-    }
-  }, [token, handleLogout]);
-
-  const handleLogin = async (e) => {
-    e.preventDefault();
-    try {
-      const res = await fetch(`${API_URL}/api/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password })
-      });
-      const data = await res.json();
-      if (res.ok && data.role === 'ADMIN') {
-        localStorage.setItem('admin_token', data.token);
-        localStorage.setItem('admin_clubId', data.clubId);
-        setToken(data.token);
-        setErrorMsg('');
-      } else {
-        setErrorMsg(data.error || 'Access denied.');
-      }
-    } catch {
-      setErrorMsg('Login request failed.');
-    }
-  };
-
-  if (!token) {
-    return (
-      <div className="container" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh' }}>
-        <div className="glass-panel" style={{ width: '100%', maxWidth: '400px', textAlign: 'center' }}>
-          <h2>Club Admin Login</h2>
-          {errorMsg && <p style={{ color: 'var(--danger)', marginTop: '10px' }}>{errorMsg}</p>}
-          <form onSubmit={handleLogin} style={{ marginTop: '20px', textAlign: 'left' }}>
-            <div className="form-group">
-              <label className="form-label">Email</label>
-              <input type="email" value={email} onChange={e=>setEmail(e.target.value)} className="form-control" required />
-            </div>
-            <div className="form-group">
-              <label className="form-label">Password</label>
-              <input type="password" value={password} onChange={e=>setPassword(e.target.value)} className="form-control" required />
-            </div>
-            <button type="submit" className="btn btn-primary mt-4" style={{width: '100%'}}>Login</button>
-            <button type="button" className="btn btn-secondary mt-2" style={{width: '100%'}} onClick={() => navigate('/')}>Back Home</button>
-          </form>
-        </div>
-      </div>
-    );
-  }
-
-  const handleUpdateClubName = (e) => {
-    if (clubNameDraft === null) return;
-    socket.timeout(5000).emit('update_club_name', e.target.value, (err, result) => {
-      if (err || !result?.success) setErrorMsg(result?.error || 'Could not save the club name. Please retry.');
-      else { setClubNameDraft(null); setErrorMsg(''); }
-    });
-  };
-
-  const handleUpdateClubLocation = (e) => {
-    if (mapUrlDraft === null) return;
-    socket.timeout(5000).emit('update_club_location', e.target.value, (err, result) => {
-      if (err || !result?.success) setErrorMsg(result?.error || 'Could not save the club location. Please retry.');
-      else { setMapUrlDraft(null); setErrorMsg(''); }
-    });
-  };
-
-  const handleAddCourt = (type) => {
-    const newCourt = {
-      id: `court-${Date.now()}`,
-      number: state.courts.length + 1,
-      type: type, // 'Hard' or 'Clay'
-      sideA: [],
-      sideB: []
-    };
-    socket.emit('update_courts', [...state.courts, newCourt]);
-  };
-
-  const handleRemoveCourt = (id) => {
-    socket.emit('update_courts', state.courts.filter(c => c.id !== id));
-  };
-
-  const handleAutoMatchmake = () => {
-    socket.emit('auto_matchmake');
-  };
-
-  const handleToggleGame = () => {
-    socket.emit('toggle_game', !state.gameStarted);
-  };
-
-  const handleApprovePlayer = (requestId) => {
-    socket.emit('admin_approve_player', { requestId });
-  };
-
-  const handleDenyPlayer = (requestId) => {
-    socket.emit('admin_deny_player', { requestId });
-  };
-
-  const handleRemovePlayer = (playerId) => {
-    socket.emit('admin_remove_player', { playerId });
-  };
-
-  const handleToggleRequireApproval = () => {
-    socket.emit('toggle_require_approval', !state.requireApproval);
-  };
-
-  // Drag & Drop Handlers
-  const onDragStart = (e, playerId, sourceCourtId, sourceSide) => {
-    e.dataTransfer.setData('playerId', playerId);
-    e.dataTransfer.setData('sourceCourtId', sourceCourtId);
-    e.dataTransfer.setData('sourceSide', sourceSide);
-  };
-
-  const onDragOver = (e) => {
-    e.preventDefault(); // allow drop
-  };
-
-  const onDrop = (e, destCourtId, destSide) => {
-    e.preventDefault();
-    const playerId = e.dataTransfer.getData('playerId');
-    const sourceCourtId = e.dataTransfer.getData('sourceCourtId');
-    const sourceSide = e.dataTransfer.getData('sourceSide');
-
-    if (playerId) {
-      socket.emit('admin_move_player', {
-        playerId,
-        sourceCourtId,
-        sourceSide,
-        destCourtId,
-        destSide
-      });
-    }
-  };
-
-  // Render player card
-  const renderPlayer = (id, sourceCourtId, sourceSide, isCourtSlot = false) => {
-    const p = state.players[id];
-    if (!p) return null;
-    return (
-      <div 
-        key={p.id} 
-        draggable
-        onDragStart={(e) => onDragStart(e, p.id, sourceCourtId, sourceSide)}
-        style={{ 
-          background: p.disconnected ? 'rgba(0,0,0,0.8)' : 'rgba(0,0,0,0.5)', 
-          opacity: p.disconnected ? 0.6 : 1,
-          padding: '8px', 
-          borderRadius: '8px',
-          marginBottom: isCourtSlot ? '0' : '8px',
-          cursor: 'grab',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '10px',
-          border: '1px solid rgba(255,255,255,0.2)',
-          boxShadow: '0 2px 4px rgba(0,0,0,0.3)',
-          color: '#fff',
-          width: '100%',
-          boxSizing: 'border-box'
-        }}
-      >
-        <img src={p.avatar} alt="avatar" width="30" height="30" style={{borderRadius: '50%', minWidth: '30px', minHeight: '30px', flexShrink: 0, objectFit: 'cover', filter: p.disconnected ? 'grayscale(100%)' : 'none'}} />
-        <div style={{ textShadow: '1px 1px 2px rgba(0,0,0,0.5)', overflow: 'hidden', flex: 1 }}>
-          <div style={{fontWeight: 'bold', fontSize: '0.85rem', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden'}}>
-            {p.name} ({p.gender}){p.disconnected && <span style={{color: '#ff4444', fontSize: '0.75rem', fontWeight: 'bold'}}> [Offline]</span>}
-          </div>
-          <div style={{fontSize: '0.75rem', color: 'var(--accent-tennis)'}}>Level: {p.level} | Idle: {p.idle_rounds}</div>
-        </div>
-        <button 
-          onClick={(ev) => { ev.stopPropagation(); handleRemovePlayer(p.id); }}
-          title="Remove player from session"
-          style={{ 
-            background: 'rgba(239, 68, 68, 0.3)', 
-            border: '1px solid rgba(239, 68, 68, 0.6)', 
-            color: '#ff6b6b', 
-            cursor: 'pointer', 
-            fontSize: '0.75rem', 
-            borderRadius: '4px', 
-            padding: '2px 6px',
-            flexShrink: 0,
-            lineHeight: 1
-          }}
-        >✕</button>
-      </div>
-    );
-  };
-
-  const renderCourtSlot = (courtId, side, slotIndex, playersArray) => {
-    const playerId = playersArray[slotIndex];
-    const isDroppable = !playerId;
-
-    return (
-      <div 
-        style={{ 
-          flex: 1, 
-          border: isDroppable ? '2px dashed rgba(255,255,255,0.4)' : 'none', 
-          borderRadius: '8px', 
-          margin: '0',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          background: isDroppable ? 'rgba(0,0,0,0.2)' : 'transparent',
-          minHeight: '60px',
-          padding: isDroppable ? '4px' : '0',
-          width: '100%',
-          boxSizing: 'border-box'
-        }}
-        onDragOver={isDroppable ? onDragOver : undefined}
-        onDrop={(e) => {
-          if (isDroppable) onDrop(e, courtId, side);
-        }}
-      >
-        {playerId ? (
-           renderPlayer(playerId, courtId, side, true)
-        ) : (
-           <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: '0.8rem', fontWeight: 'bold' }}>Drop Here</span>
-        )}
-      </div>
-    );
-  };
-
-  return (
-    <div className="container animate-fade-in" style={{ display: 'flex', flexDirection: 'column', height: '100vh', padding: '1rem', maxWidth: 'none' }}>
-      <div className="glass-panel text-center mb-4" style={{ padding: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ display: 'flex', gap: '10px' }}>
-          <button className="btn btn-secondary" onClick={() => navigate('/')}>Home</button>
-          <button className="btn btn-danger" onClick={handleLogout}>Logout</button>
-        </div>
-        <div>
-          <h2 style={{margin: 0}}>Admin Dashboard</h2>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '1rem', alignItems: 'center' }}>
-            <input 
-              type="text" 
-              className="form-control" 
-              value={clubNameDraft ?? state.clubName}
-              onChange={(e) => setClubNameDraft(e.target.value)}
-              onBlur={handleUpdateClubName}
-              placeholder="Club Name"
-              style={{ width: '250px', textAlign: 'center' }}
-            />
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', position: 'relative' }}>
-              <input 
-                type="text" 
-                className="form-control" 
-                value={mapUrlDraft ?? state.clubMapUrl ?? ''}
-                onChange={(e) => setMapUrlDraft(e.target.value)}
-                onBlur={handleUpdateClubLocation}
-                placeholder="Google Maps Link (optional)"
-                style={{ width: '250px', textAlign: 'center', borderColor: (state.clubLat && state.clubLng) ? 'var(--accent-tennis)' : 'inherit' }}
-                title="Paste a Google Maps link to enforce that players must be physically near the club to join."
-              />
-              {(state.clubLat != null && state.clubLng != null) && (
-                <span style={{ color: 'var(--accent-tennis)', fontSize: '1.2rem', position: 'absolute', right: '-30px' }} title={`GPS Set: ${state.clubLat.toFixed(4)}, ${state.clubLng.toFixed(4)}`}>
-                  ✓
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
-          <button 
-            className={state.requireApproval ? 'btn btn-danger' : 'btn btn-secondary'}
-            onClick={handleToggleRequireApproval}
-            title={state.requireApproval ? 'All players currently require approval. Click to enable GPS auto-verification.' : 'GPS verification is active. Click to require admin approval for ALL players.'}
-            style={{ fontSize: '0.8rem', padding: '6px 12px', whiteSpace: 'nowrap' }}
-          >
-            {state.requireApproval ? '🔒 Approval Required (GPS Off)' : '📍 GPS Verification On'}
-          </button>
-          <button className="btn btn-primary" onClick={handleAutoMatchmake}>Auto Matchmake</button>
-          <button className={state.gameStarted ? "btn btn-danger" : "btn btn-success"} onClick={handleToggleGame}>
-            {state.gameStarted ? '⏹ End Game' : '▶ Start Game'}
-          </button>
-        </div>
-      </div>
-
-      {errorMsg && <p role="alert" className="mb-4" style={{ color: 'var(--danger)' }}>{errorMsg}</p>}
-
-      <div style={{ display: 'flex', gap: '1rem', flex: 1, overflow: 'hidden' }}>
-        {/* Sidebar: Pending Approvals + Idle Queue */}
-        <div style={{ width: '300px', display: 'flex', flexDirection: 'column', gap: '1rem', overflow: 'hidden' }}>
-
-          {/* Pending Approvals */}
-          {state.pendingApprovals.length > 0 && (
-            <div 
-              className="glass-panel animate-fade-in" 
-              style={{ padding: '1rem', flexShrink: 0, maxHeight: '40%', overflowY: 'auto', border: '1px solid rgba(255, 180, 0, 0.4)' }}
-            >
-              <h3 style={{ color: '#ffb400', margin: '0 0 0.5rem 0' }}>⚠️ Pending Approvals ({state.pendingApprovals.length})</h3>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                {state.pendingApprovals.map(req => (
-                  <div key={req.id} style={{ 
-                    background: 'rgba(255, 180, 0, 0.1)', 
-                    border: '1px solid rgba(255, 180, 0, 0.3)', 
-                    borderRadius: '8px', 
-                    padding: '10px',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '8px'
-                  }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <img src={req.avatar} alt="avatar" width="30" height="30" style={{ borderRadius: '50%', minWidth: '30px', minHeight: '30px', objectFit: 'cover' }} />
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontWeight: 'bold', fontSize: '0.85rem', color: '#fff' }}>{req.name} ({req.gender})</div>
-                        <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                          Level: {req.level}
-                          {req.distance && <span style={{ color: '#ff6b6b' }}> | {req.distance}km away</span>}
-                        </div>
-                      </div>
-                    </div>
-                    <div style={{ display: 'flex', gap: '6px' }}>
-                      <button 
-                        className="btn btn-success" 
-                        style={{ flex: 1, padding: '4px 8px', fontSize: '0.8rem' }}
-                        onClick={() => handleApprovePlayer(req.id)}
-                      >✓ Approve</button>
-                      <button 
-                        className="btn btn-danger" 
-                        style={{ flex: 1, padding: '4px 8px', fontSize: '0.8rem' }}
-                        onClick={() => handleDenyPlayer(req.id)}
-                      >✕ Deny</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Idle Queue */}
-          <div 
-            className="glass-panel" 
-            style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '1rem', overflow: 'hidden' }}
-            onDragOver={onDragOver}
-            onDrop={(e) => onDrop(e, 'idle', null)}
-          >
-            <h3>Idle Queue ({state.idleQueue.length})</h3>
-            <p style={{fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '1rem'}}>
-              Drag players here to remove from courts.
-            </p>
-            <div style={{ overflowY: 'auto', flex: 1 }}>
-              {state.idleQueue.map(id => renderPlayer(id, 'idle', null))}
-            </div>
-          </div>
-        </div>
-
-        {/* Main: Courts */}
-        <div className="glass-panel" style={{ flex: 1, padding: '1rem', overflowY: 'auto' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-            <h3>Courts ({state.courts.length})</h3>
-            <div>
-              <button className="btn btn-secondary" style={{ marginRight: '10px' }} onClick={() => handleAddCourt('Hard')}>+ Add Hard Court</button>
-              <button className="btn btn-secondary" onClick={() => handleAddCourt('Clay')}>+ Add Clay Court</button>
-            </div>
-          </div>
-
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem' }}>
-            {state.courts.map(court => (
-              <div 
-                key={court.id} 
-                style={{ 
-                  flex: '0 0 320px', 
-                  width: '320px',
-                  border: `2px solid ${court.type === 'Clay' ? 'var(--clay-court)' : 'var(--hard-court)'}`,
-                  borderRadius: '12px',
-                  background: 'rgba(0,0,0,0.3)',
-                  overflow: 'hidden',
-                  display: 'flex',
-                  flexDirection: 'column'
-                }}
-              >
-                <div style={{ 
-                  background: court.type === 'Clay' ? 'var(--clay-court)' : 'var(--hard-court)',
-                  padding: '8px',
-                  textAlign: 'center',
-                  fontWeight: 'bold',
-                  display: 'flex',
-                  justifyContent: 'space-between'
-                }}>
-                  <span>Court {court.number} ({court.type})</span>
-                  <button style={{background: 'none', border:'none', color:'white', cursor:'pointer', fontSize: '1.2rem'}} onClick={() => handleRemoveCourt(court.id)}>×</button>
-                </div>
-                
-                <TennisCourt type={court.type}>
-                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '20px 10px 20px 24px', alignItems: 'stretch', justifyContent: 'center', gap: '8px' }}>
-                    {renderCourtSlot(court.id, 'A', 0, court.sideA)}
-                    {renderCourtSlot(court.id, 'A', 1, court.sideA)}
-                  </div>
-                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '20px 24px 20px 10px', alignItems: 'stretch', justifyContent: 'center', gap: '8px' }}>
-                    {renderCourtSlot(court.id, 'B', 0, court.sideB)}
-                    {renderCourtSlot(court.id, 'B', 1, court.sideB)}
-                  </div>
-                </TennisCourt>
-              </div>
-            ))}
-          </div>
-
-          <MatchHistory matchHistory={state.matchHistory} players={state.players} />
-        </div>
-      </div>
-    </div>
-  );
+export default function AdminEntry() {
+  const [setup] = useState(() => new URLSearchParams(window.location.hash.slice(1)).has('setup'));
+  return setup ? <AcceptAccount /> : <AdminDashboard />;
 }
 
-export default AdminDashboard;
+function AdminDashboard() {
+  const [token, setToken] = useState(() => localStorage.getItem('admin_token') || '');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [ready, setReady] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const commandLock = useRef(false);
+  const selectionPanel = useRef(null);
+  const [state, setState] = useState({ courts: [], players: {}, idleQueue: [], pendingApprovals: [], matchHistory: [] });
+  const [nameDraft, setNameDraft] = useState(null);
+  const [mapDraft, setMapDraft] = useState(null);
+  const [pinDraft, setPinDraft] = useState('');
+  const [tab, setTab] = useState('session');
+  const [selected, setSelected] = useState('');
+  const [destination, setDestination] = useState('idle');
+  const [archives, setArchives] = useState([]);
+  const [archive, setArchive] = useState(null);
+  const [display, setDisplay] = useState(false);
+  const owner = state.myRole === 'OWNER';
+  const locked = !ready || busy;
+  const assignmentsLocked = locked || state.gameStarted || state.status !== 'open';
+
+  useEffect(() => {
+    if (!selected || !selectionPanel.current) return;
+    selectionPanel.current.focus({ preventScroll: true });
+    selectionPanel.current.scrollIntoView({ block: 'nearest', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
+  }, [selected]);
+
+  const clearLogin = useCallback(() => {
+    localStorage.removeItem('admin_token'); localStorage.removeItem('admin_clubId');
+    setToken(''); setReady(false); setPassword('');
+  }, []);
+  useEffect(() => {
+    if (!token) return;
+    const onError = message => { setError(message); if (message.includes('Unauthorized')) clearLogin(); };
+    const onState = updated => setState(updated);
+    socket.on('error', onError); socket.on('state_update', onState);
+    const cleanup = connectToClub(socket, { clubId: localStorage.getItem('admin_clubId'), role: 'ADMIN', token }, {
+      onJoined: () => { setReady(true); setError(''); }, onDisconnected: () => setReady(false), onError
+    });
+    return () => { cleanup(); socket.off('error', onError); socket.off('state_update', onState); };
+  }, [token, clearLogin]);
+
+  const login = async event => {
+    event.preventDefault(); setBusy(true);
+    try {
+      const result = await api('/login', null, { method: 'POST', body: { email, password } });
+      if (!['ADMIN', 'OWNER'].includes(result.role)) throw new Error('Use a club staff account.');
+      localStorage.setItem('admin_token', result.token); localStorage.setItem('admin_clubId', result.clubId);
+      setToken(result.token); setPassword(''); setError('');
+    } catch (error) { setError(error.message); } finally { setBusy(false); }
+  };
+  const logout = async () => {
+    try { await api('/logout', token, { method: 'POST' }); clearLogin(); }
+    catch (error) { if (error.status === 401) clearLogin(); else setError('Could not sign out on the server. Reconnect and try again.'); }
+  };
+  const command = async (action, value) => {
+    if (!ready || commandLock.current) return false;
+    commandLock.current = true; setBusy(true); setError('');
+    try { await sendAdminCommand(socket, state, action, value); return true; }
+    catch (error) { setError(error.message); return false; }
+    finally { commandLock.current = false; setBusy(false); }
+  };
+  const loadArchives = async () => {
+    try { setArchives((await api('/sessions', token)).sessions); setTab('history'); }
+    catch (error) { setError(error.message); }
+  };
+  const move = async (playerId, target) => {
+    const [courtId, side] = target.split(':');
+    if (await command('admin_move_player', { playerId, destCourtId: courtId, destSide: side || null })) setSelected('');
+  };
+  const drop = (event, target) => { event.preventDefault(); const id = event.dataTransfer.getData('playerId'); if (id && !assignmentsLocked) move(id, target); };
+  const playerCard = id => {
+    const p = state.players[id]; if (!p) return null;
+    return <div className={`player-card ${selected === id ? 'selected' : ''}`} key={id} draggable={!assignmentsLocked && !display}
+      onDragStart={event => event.dataTransfer.setData('playerId', id)}>
+      <button className="player-select" disabled={assignmentsLocked || display} onClick={() => { setSelected(id); setDestination(p.courtId ? `${p.courtId}:${p.side}` : 'idle'); }} aria-label={`Select ${p.name} to move`} aria-pressed={selected === id}>
+        <Avatar player={p} /><span className="player-info"><strong>{p.name}</strong><small>{p.available === false ? 'Taking a break' : p.courtId ? `Level ${p.level}` : `Level ${p.level} · ${p.idle_rounds || 0} ${p.idle_rounds === 1 ? 'round' : 'rounds'} waiting`}{p.disconnected ? ' · Offline' : ''}</small></span><Icon name={p.available === false ? 'coffee' : 'chevron'} size={14} />
+      </button>
+    </div>;
+  };
+  if (!token) return <AuthLayout title="Welcome back." description="Sign in to bring your next club session to life.">
+    <form className="form-stack" onSubmit={login}><label>Email<input className="form-control" type="email" autoComplete="username" placeholder="you@yourclub.com" required value={email} onChange={e => setEmail(e.target.value)} /></label>
+      <label>Password<input className="form-control" type="password" autoComplete="current-password" required value={password} onChange={e => setPassword(e.target.value)} /></label>
+      {error && <p className="error-message" role="alert">{error}</p>}<button disabled={busy} className="btn btn-primary btn-block">{busy ? 'Signing in…' : 'Sign in'}<Icon name="arrow" /></button>
+    </form><p className="auth-help"><Icon name="shield" /> Need access or a password reset? Ask a club owner for a private setup link.</p>
+  </AuthLayout>;
+
+  const people = Object.values(state.players);
+  const onCourt = people.filter(p => p.courtId).length;
+  const waiting = state.idleQueue.filter(id => state.players[id]?.available !== false).length;
+  const roundNumber = state.matchHistory.length + 1;
+  const clubId = localStorage.getItem('admin_clubId');
+  const title = { session: 'Live session', history: 'Past sessions', settings: 'Club settings', staff: 'Staff & activity' }[tab];
+  const sessionLabel = state.status === 'ended' ? 'Session ended' : state.gameStarted ? 'Round in play' : 'Between rounds';
+  return <div className={`club-app ${display ? 'display-mode' : ''}`}>
+    {!display && <aside className="app-sidebar"><Brand light /><div className="club-switcher"><span className="club-monogram">{state.clubName?.[0] || 'T'}</span><div><strong>{state.clubName || 'Connecting…'}</strong><small>Club {owner ? 'owner' : 'admin'}</small></div></div><p className="nav-caption">CLUBHOUSE</p>
+      <nav className="app-nav" aria-label="Club management"><button aria-current={tab === 'session' ? 'page' : undefined} onClick={() => setTab('session')}><Icon name="court" />Live session<span className="nav-live-dot" /></button><button aria-current={tab === 'history' ? 'page' : undefined} onClick={loadArchives}><Icon name="clock" />Past sessions</button>
+        {owner && <><button aria-current={tab === 'staff' ? 'page' : undefined} onClick={() => setTab('staff')}><Icon name="people" />Staff & activity</button><button aria-current={tab === 'settings' ? 'page' : undefined} onClick={() => setTab('settings')}><Icon name="settings" />Club settings</button></>}
+      </nav><div className="sidebar-bottom"><div className="sidebar-note"><Icon name="court" size={30} /><p>Good matches.<br /><em>Even better company.</em></p></div><button className="sidebar-signout" onClick={logout}><Icon name="logout" />Sign out</button></div>
+    </aside>}
+    <main className="app-main" id="main-content"><header className="app-topbar"><span className="breadcrumb">Clubhouse <Icon name="chevron" size={13} /> <strong>{display ? 'Court display' : title}</strong></span><div className="toolbar"><span className={ready ? 'connection-good' : 'connection-offline'} role="status"><span className="status-dot" />{ready ? busy ? 'Saving…' : 'Live updates' : 'Reconnecting…'}</span><button className="btn btn-secondary btn-small" onClick={() => setDisplay(value => !value)}><Icon name="screen" />{display ? 'Exit display' : 'Court display'}</button></div></header>
+    <div className="app-content"><div className="page-heading"><div><p className="eyebrow">{state.createdAt ? new Date(state.createdAt).toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' }) : 'YOUR CLUBHOUSE'}</p><h1>{display ? state.clubName : title}</h1><p className="muted">{tab === 'session' || display ? 'A little organisation. A great day on court.' : tab === 'staff' ? 'A shared effort, with an account for everyone.' : tab === 'settings' ? 'Make your clubhouse feel like home.' : 'Every round, all in one place.'}</p></div>{(tab === 'session' || display) && <span className={`badge ${state.gameStarted ? 'badge-live' : ''}`}><span className="status-dot" />{sessionLabel}</span>}</div>
+    {error && <p role="alert" className="error-message">{error}</p>}
+    {!ready && <p className="notice">Changes are paused until your connection is restored.</p>}
+    {!display && tab === 'staff' && owner && <StaffPanel token={token} onError={setError} />}
+    {!display && tab === 'settings' && owner && <div className="settings-grid"><section className="panel settings-card"><span className="icon-tile"><Icon name="court" /></span><h2>Club details</h2><p className="muted">The name players see when they arrive.</p>
+      <form className="form-stack" onSubmit={async e => { e.preventDefault(); if (await command('update_club_name', nameDraft ?? state.clubName)) setNameDraft(null); }}><label>Club name<input className="form-control" maxLength={120} required value={nameDraft ?? state.clubName ?? ''} onChange={e => setNameDraft(e.target.value)} /></label><button disabled={locked} className="btn btn-primary">Save name</button></form></section>
+      <section className="panel settings-card"><span className="icon-tile"><Icon name="pin" /></span><h2>Club location</h2><p className="muted">Help verify that players are at the club.</p><form className="form-stack" onSubmit={async e => { e.preventDefault(); if (await command('update_club_location', mapDraft ?? state.clubMapUrl ?? '')) setMapDraft(null); }}><label>Google Maps link<input className="form-control" value={mapDraft ?? state.clubMapUrl ?? ''} onChange={e => setMapDraft(e.target.value)} placeholder="https://www.google.com/maps/@…" /></label><button disabled={locked} className="btn btn-primary">Save location</button></form><p className="field-hint">{state.clubLat != null ? 'Location verification is configured. Clear the link to remove it.' : 'No location set. PIN holders can check in unless approval is required.'}</p></section>
+      <section className="panel settings-card"><span className="icon-tile"><Icon name="shield" /></span><h2>Player access</h2><p className="muted">Choose who can join your open session.</p><div className="setting-row"><span><strong>Staff approval</strong><small>Review each player before they join.</small></span><button disabled={locked || state.status !== 'open'} className={`toggle ${state.requireApproval ? 'is-on' : ''}`} role="switch" aria-checked={!!state.requireApproval} aria-label="Require staff approval" onClick={() => command('toggle_require_approval', !state.requireApproval)}><span /></button></div>
+      <form className="form-stack" onSubmit={async e => { e.preventDefault(); if (await command('rotate_pin', pinDraft)) setPinDraft(''); }}><label>New player PIN<input className="form-control" inputMode="numeric" pattern="[0-9]{4,12}" type="password" required value={pinDraft} onChange={e => setPinDraft(e.target.value)} placeholder="4–12 digits" /></label><button disabled={locked} className="btn btn-primary">Change PIN</button></form><p className="field-hint">A new PIN clears pending applications. Waiting applicants verify again; admitted players keep their sessions.</p></section></div>}
+    {!display && tab === 'history' && <section className="panel section-pad"><div className="section-heading spread"><h2>Session archive</h2><span className="count-pill">{archives.length}</span></div><div className="archive-list">{archives.map(item => <div className="archive-row" key={item.id}><span className="icon-tile"><Icon name="clock" /></span><div className="archive-info"><strong>{new Date(item.createdAt).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })}</strong><small>{new Date(item.createdAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })} · {item.status === 'ended' ? 'Completed session' : 'Current session'}</small></div>
+      <div className="toolbar"><button className="btn btn-secondary btn-small" onClick={async () => { try { setArchive(await api(`/sessions/${item.id}`, token)); } catch (error) { setError(error.message); } }}>View rounds<Icon name="arrow" size={14} /></button>
+      {owner && item.status === 'ended' && item.id !== state.sessionId && <button className="btn btn-danger btn-small" onClick={async () => { if (!window.confirm('Permanently delete this archived session and its player history?')) return; try { await api(`/sessions/${item.id}`, token, { method: 'DELETE' }); setArchive(null); await loadArchives(); } catch (error) { setError(error.message); } }}>Delete archive</button>}</div>
+    </div>)}</div>{!archives.length && <p className="empty-state">Your sessions will appear here as you play.</p>}{archive && <MatchHistory matchHistory={archive.matchHistory} players={{}} />}</section>}
+    {(display || tab === 'session') && <>
+      {!display && <section className="session-banner"><div className="banner-copy"><p className="eyebrow">{state.status === 'ended' ? 'UNTIL NEXT TIME' : `ROUND ${String(roundNumber).padStart(2, '0')}`}</p><h2>{state.status === 'ended' ? 'That’s a wrap.' : state.gameStarted ? 'The courts are yours.' : 'Ready when you are.'}</h2><p>{state.status === 'ended' ? 'Your rounds are saved. Start fresh for your next club session.' : state.gameStarted ? 'Enjoy the game. End the round when everyone is ready to rotate.' : 'Arrange the pairings, make any adjustments, then start the round.'}</p><div className="toolbar">
+        {state.status === 'ended' ? <button disabled={locked} className="btn btn-lime" onClick={() => command('new_session')}><Icon name="plus" />Start new session</button> : <><button disabled={assignmentsLocked} className="btn btn-banner-secondary" onClick={() => command('auto_matchmake')}><Icon name="shuffle" />Arrange matches</button><button disabled={locked} className="btn btn-lime" onClick={() => command('toggle_game', !state.gameStarted)}><Icon name={state.gameStarted ? 'stop' : 'play'} size={16} />{state.gameStarted ? 'End round' : 'Start round'}</button></>}
+      </div></div><div className="banner-court" aria-hidden="true"><Icon name="court" size={220} /><span>{String(roundNumber).padStart(2, '0')}</span></div></section>}
+      <section className="stats-strip" aria-label="Session overview">{[['people', people.length, 'Checked in', `${onCourt} on court`], ['court', state.courts.length, 'Courts', 'In this session'], ['coffee', waiting, 'Waiting to play', `${state.idleQueue.length - waiting} taking a break`], ['clock', state.matchHistory.length, 'Rounds completed', sessionLabel]].map(([icon, value, label, detail]) => <div className="stat" key={label}><div className="stat-top"><span>{label}</span><Icon name={icon} /></div><strong>{value.toString().padStart(2, '0')}</strong><small>{detail}</small></div>)}</section>
+      {!display && <div className="session-utility"><div className="toolbar"><span className={`badge ${state.checkInOpen && state.status === 'open' ? 'badge-live' : ''}`}><span className="status-dot" />Check-in {state.checkInOpen && state.status === 'open' ? 'open' : 'closed'}</span><a className="text-link" href={`/${clubId}`} target="_blank" rel="noreferrer"><Icon name="link" size={15} />Player join page<Icon name="arrow" size={14} /></a></div>{state.status === 'open' && <div className="toolbar"><button disabled={locked} className="text-button" onClick={() => command('set_check_in', !state.checkInOpen)}>{state.checkInOpen ? 'Close check-in' : 'Open check-in'}</button><span className="utility-divider" /><button disabled={assignmentsLocked} className="text-button" onClick={() => { if (window.confirm('End this club session? Players will be signed out and the rounds will be archived.')) command('end_session'); }}>End session</button></div>}</div>}
+      {!display && selected && state.players[selected] && <section className="selection-panel" aria-label="Selected player" ref={selectionPanel} tabIndex={-1}><div className="selection-title"><Avatar player={state.players[selected]} /><div><small>SELECTED PLAYER</small><strong>{state.players[selected].name}</strong></div><button className="icon-button" aria-label="Cancel selection" onClick={() => setSelected('')}><Icon name="close" /></button></div><div className="toolbar"><label>Move to<select className="form-control" value={destination} onChange={e => setDestination(e.target.value)}><option value="idle">Waiting list</option>{state.courts.flatMap(c => ['A', 'B'].map(side => <option key={`${c.id}:${side}`} value={`${c.id}:${side}`}>Court {c.number} · Side {side}</option>))}</select></label><button disabled={assignmentsLocked} className="btn btn-primary" onClick={() => move(selected, destination)}>Move player<Icon name="arrow" /></button><button disabled={assignmentsLocked} className="btn btn-secondary" onClick={() => command('set_player_available', { playerId: selected, available: state.players[selected].available === false })}><Icon name="coffee" />{state.players[selected].available === false ? 'Make available' : 'Take a break'}</button><button disabled={assignmentsLocked} className="btn btn-danger" onClick={async () => { if (await command('admin_remove_player', { playerId: selected })) setSelected(''); }}>Remove player</button></div></section>}
+      <div className="session-layout"><section className="courts-panel"><div className="section-heading spread"><div><h2>Your courts <span className="count-pill">{state.courts.length}</span></h2>{!display && <p className="muted">{state.gameStarted ? 'Assignments are locked while the round is in play.' : 'Select a player to move them. Drag and drop works too.'}</p>}</div>{!display && <details className="action-menu"><summary className="btn btn-secondary btn-small"><Icon name="plus" />Add court</summary><div className="action-menu-items"><button disabled={assignmentsLocked} onClick={e => { command('add_court', { type: 'Hard' }); e.currentTarget.closest('details').open = false; }}>Hard court</button><button disabled={assignmentsLocked} onClick={e => { command('add_court', { type: 'Clay' }); e.currentTarget.closest('details').open = false; }}>Clay court</button></div></details>}</div>
+        <div className="court-grid">{state.courts.map(court => <article className={`court-card ${court.type === 'Clay' ? 'clay' : ''}`} key={court.id}><header><div className="court-title"><span className="court-number">{String(court.number).padStart(2, '0')}</span><div><h3>Court {court.number}</h3><span className="court-type">{court.type} court</span></div></div>{!display && <button disabled={assignmentsLocked} className="icon-button" title={`Remove court ${court.number}`} aria-label={`Remove court ${court.number}`} onClick={() => command('remove_court', { courtId: court.id })}><Icon name="close" size={16} /></button>}</header><TennisCourt type={court.type}>
+          {['A', 'B'].map(side => <div className="court-side" key={side} onDragOver={e => e.preventDefault()} onDrop={e => drop(e, `${court.id}:${side}`)}><span className="side-label">SIDE {side}</span>{court[`side${side}`].map(playerCard)}{Array.from({ length: Math.max(0, 2 - court[`side${side}`].length) }, (_, index) => <span className="empty-slot" key={index}><Icon name="plus" size={14} />Open spot</span>)}</div>)}
+        </TennisCourt><footer className="court-footer"><span><span className="status-dot" />{state.gameStarted ? 'In play' : state.status === 'ended' ? 'Session ended' : court.sideA.length > 0 && court.sideA.length === court.sideB.length ? 'Ready to play' : 'Waiting for players'}</span><span>{court.sideA.length + court.sideB.length} / 4 players</span></footer></article>)}</div>{!state.courts.length && <div className="panel empty-state"><Icon name="court" size={38} /><h3>A blank court, a fresh start.</h3><p>Add a court, check in your players, then arrange your first round.</p></div>}
+      </section><aside className="session-sidebar">
+        {!display && state.pendingApprovals.length > 0 && <section className="panel queue-panel approvals-panel"><div className="section-heading spread"><h2>Join requests</h2><span className="count-pill">{state.pendingApprovals.length}</span></div>{state.pendingApprovals.map(request => <div className="approval-card" key={request.id}><div className="section-heading"><Avatar player={request} /><div><strong>{request.name}</strong><small>Level {request.level}{request.distance != null ? ` · ${request.distance} km away` : ''}</small></div></div><div className="toolbar"><button disabled={locked} className="btn btn-primary btn-small" onClick={() => command('admin_approve_player', { requestId: request.id })}><Icon name="check" size={15} />Approve</button><button disabled={locked} className="btn btn-secondary btn-small" onClick={() => command('admin_deny_player', { requestId: request.id })}>Decline</button></div></div>)}</section>}
+        <section className="panel queue-panel" onDragOver={e => e.preventDefault()} onDrop={e => drop(e, 'idle')}><div className="section-heading spread"><h2>On the sidelines</h2><span className="count-pill">{state.idleQueue.length}</span></div><p className="muted">A breather before the next match.</p><div className="queue-list">{state.idleQueue.map(playerCard)}{!state.idleQueue.length && <div className="queue-empty"><Icon name="coffee" size={28} /><p>No players waiting.</p></div>}</div>{!display && <p className="queue-tip"><Icon name="people" size={16} />Players waiting longer get priority in the next arrangement.</p>}</section>
+      </aside></div><MatchHistory matchHistory={state.matchHistory} players={state.players} />
+    </>}
+    <footer className="app-footer"><span>Tennis Matcher</span><span>Made for the love of the game.</span></footer></div></main>
+  </div>;
+}

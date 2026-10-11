@@ -1,4 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+
+const API_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:4000';
 
 function RootDashboard() {
   const [token, setToken] = useState(localStorage.getItem('root_token') || '');
@@ -17,28 +19,28 @@ function RootDashboard() {
   const [newAdminEmail, setNewAdminEmail] = useState('');
   const [newAdminPassword, setNewAdminPassword] = useState('');
 
-  const API_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:4000';
-
-  useEffect(() => {
-    if (token) fetchClubs();
+  const fetchClubs = useCallback(async (signal) => {
+    const res = await fetch(`${API_URL}/api/root/clubs`, {
+      headers: { 'Authorization': `Bearer ${token}` }, signal
+    });
+    if (res.ok) return res.json();
+    const error = new Error('Could not load clubs.');
+    error.status = res.status;
+    throw error;
   }, [token]);
 
-  const fetchClubs = async () => {
-    try {
-      const res = await fetch(`${API_URL}/api/root/clubs`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setClubs(data);
-      } else {
+  useEffect(() => {
+    if (!token) return;
+    const controller = new AbortController();
+    fetchClubs(controller.signal).then(setClubs).catch(error => {
+      if (controller.signal.aborted) return;
+      if (error.status === 401 || error.status === 403) {
         localStorage.removeItem('root_token');
         setToken('');
-      }
-    } catch (e) {
-      console.error(e);
-    }
-  };
+      } else setErrorMsg(error.message);
+    });
+    return () => controller.abort();
+  }, [token, fetchClubs]);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -56,7 +58,7 @@ function RootDashboard() {
       } else {
         setErrorMsg(data.error || 'Access denied. Root only.');
       }
-    } catch (e) {
+    } catch {
       setErrorMsg('Login request failed.');
     }
   };
@@ -83,11 +85,11 @@ function RootDashboard() {
       if (res.ok) {
         setNewClubId(''); setNewClubName(''); setNewPin(''); setNewAdminEmail(''); setNewAdminPassword('');
         setErrorMsg('');
-        fetchClubs();
+        setClubs(await fetchClubs());
       } else {
         setErrorMsg(data.error || 'Failed to create club');
       }
-    } catch (e) {
+    } catch {
       setErrorMsg('Create club request failed.');
     }
     setIsCreating(false);

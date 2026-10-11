@@ -1,12 +1,24 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { socket } from '../socket';
 import TennisCourt from './TennisCourt';
 import MatchHistory from './MatchHistory';
+import { connectToClub } from '../clubConnection';
+import { readPlayerSession, savePlayerSession, clearPlayerSession } from '../playerSession';
+import { getPlayerCoordinates } from '../playerLocation';
+
+const API_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:4000';
 
 function PlayerScreen() {
   const navigate = useNavigate();
   const { clubSlug } = useParams();
+  const [accessToken, setAccessToken] = useState(() => {
+    const saved = readPlayerSession(clubSlug);
+    return saved?.sessionToken || saved?.joinToken || '';
+  });
+  const [roomReady, setRoomReady] = useState(false);
+  const [connectionRevision, setConnectionRevision] = useState(0);
+  const joinAttempt = useRef(0);
   
   const [hasJoined, setHasJoined] = useState(false);
   const [playerData, setPlayerData] = useState(null);
@@ -37,105 +49,134 @@ function PlayerScreen() {
     gameStarted: false
   });
 
-  const API_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:4000';
-
   useEffect(() => {
     if (!clubSlug) return;
+    const controller = new AbortController();
 
     // 1. Fetch initial public club data (Name)
     const fetchClub = async () => {
       try {
-        const res = await fetch(`${API_URL}/api/clubs/${clubSlug}`);
+        const res = await fetch(`${API_URL}/api/clubs/${clubSlug}`, { signal: controller.signal });
         const data = await res.json();
         if (res.ok) {
-          setState(s => ({ ...s, clubName: data.name }));
+          setState(s => ({ ...s, clubName: data.name, clubMapUrl: data.mapUrl, clubLat: data.lat, clubLng: data.lng }));
         } else {
           setErrorMsg(data.error || 'Club not found.');
         }
-      } catch (e) {
-        setErrorMsg('Failed to load club information.');
+      } catch {
+        if (!controller.signal.aborted) setErrorMsg('Failed to load club information.');
       }
     };
     fetchClub();
+    return () => controller.abort();
+  }, [clubSlug]);
+
+  useEffect(() => {
+    if (!clubSlug || !accessToken) return;
 
     // 2. Setup Sockets
     socket.on('state_update', setState);
     
-    socket.on('player_joined', (data) => {
-      sessionStorage.setItem('tennis_session_id', data.id);
+    const onPlayerJoined = (data) => {
+      savePlayerSession(clubSlug, { ...readPlayerSession(clubSlug), sessionId: data.id, sessionToken: data.sessionToken });
       setPlayerData(data);
       setPinVerified(true); // they are already in!
       setHasJoined(true);
       setIsJoining(false);
+      setAwaitingApproval(false);
+      setGpsFailed(false);
+      setApprovalMessage('');
       setErrorMsg('');
-    });
+    };
     
-    socket.on('error', (msg) => {
-      if (msg && msg.includes('Session expired')) {
-        sessionStorage.removeItem('tennis_session_id');
+    const onError = (msg) => {
+      if (msg && (msg.includes('Session expired') || msg.includes('PIN verification'))) {
+        clearPlayerSession(clubSlug);
+        setAccessToken('');
+        setPinVerified(false);
+        setHasJoined(false);
+        setPlayerData(null);
+        setAwaitingApproval(false);
+        setGpsFailed(false);
+        setApprovalMessage('');
+        setRoomReady(false);
       }
       setErrorMsg(msg);
       setIsJoining(false);
-    });
+      setAwaitingApproval(false);
+    };
 
-    socket.on('gps_failed', ({ distance }) => {
+    const onGpsFailed = ({ distance }) => {
       setGpsFailed(true);
       setGpsDistance(distance);
       setIsJoining(false);
       setErrorMsg('');
-    });
+    };
 
-    socket.on('approval_required', ({ message }) => {
+    const onApprovalRequired = ({ message }) => {
       setApprovalMessage(message);
       setIsJoining(false);
       setErrorMsg('');
-    });
+    };
 
-    socket.on('approval_denied', ({ message }) => {
+    const onApprovalDenied = ({ message }) => {
       setAwaitingApproval(false);
       setGpsFailed(false);
       setApprovalMessage('');
       setErrorMsg(message || 'Your request to join has been denied.');
-    });
+    };
 
-    socket.on('player_removed', ({ message }) => {
-      sessionStorage.removeItem('tennis_session_id');
+    const onPlayerRemoved = ({ message }) => {
+      const joinToken = readPlayerSession(clubSlug)?.joinToken;
+      clearPlayerSession(clubSlug);
+      if (joinToken) savePlayerSession(clubSlug, { joinToken });
+      setAccessToken(joinToken || '');
+      setRoomReady(false);
+      setConnectionRevision(value => value + 1);
       setHasJoined(false);
-      setPinVerified(true); // keep them on the join form, not PIN screen
+      setPinVerified(Boolean(joinToken));
       setPlayerData(null);
       setAwaitingApproval(false);
       setGpsFailed(false);
       setApprovalMessage('');
       setRemovedMessage(message || 'You have been removed by the admin.');
+    };
+
+    socket.on('player_joined', onPlayerJoined);
+    socket.on('error', onError);
+    socket.on('gps_failed', onGpsFailed);
+    socket.on('approval_required', onApprovalRequired);
+    socket.on('approval_denied', onApprovalDenied);
+    socket.on('player_removed', onPlayerRemoved);
+    const disconnectClub = connectToClub(socket, () => ({
+      clubId: clubSlug, role: 'PLAYER', token: readPlayerSession(clubSlug)?.sessionToken || accessToken
+    }), {
+      onJoined: () => {
+        setRoomReady(true);
+        const saved = readPlayerSession(clubSlug);
+        if (saved?.sessionId) socket.emit('join_player', { sessionId: saved.sessionId });
+      },
+      onError,
+      onDisconnected: () => {
+        setRoomReady(false);
+        setAwaitingApproval(false);
+        setIsJoining(false);
+        joinAttempt.current += 1;
+      }
     });
 
-    const onConnect = () => {
-      // Connect to the isolated multi-tenant room immediately to receive broadcasts
-      socket.emit('join_club_room', { clubId: clubSlug, role: 'PLAYER' });
-
-      // Attempt auto-rejoin if they refresh the tab
-      const sessionId = sessionStorage.getItem('tennis_session_id');
-      if (sessionId) {
-        socket.emit('join_player', { sessionId });
-      }
-    };
-
-    socket.on('connect', onConnect);
-    if (socket.connected) {
-      onConnect();
-    }
-
     return () => {
+      joinAttempt.current += 1;
       socket.off('state_update', setState);
-      socket.off('player_joined');
-      socket.off('error');
-      socket.off('gps_failed');
-      socket.off('approval_required');
-      socket.off('approval_denied');
-      socket.off('player_removed');
-      socket.off('connect', onConnect);
+      disconnectClub();
+      socket.off('player_joined', onPlayerJoined);
+      socket.off('error', onError);
+      socket.off('gps_failed', onGpsFailed);
+      socket.off('approval_required', onApprovalRequired);
+      socket.off('approval_denied', onApprovalDenied);
+      socket.off('player_removed', onPlayerRemoved);
     };
-  }, [clubSlug]);
+  }, [clubSlug, accessToken, connectionRevision]);
 
   const handleVerifyPin = async (e) => {
     e.preventDefault();
@@ -146,13 +187,16 @@ function PlayerScreen() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pin })
       });
-      if (res.ok) {
+      const data = await res.json();
+      if (res.ok && data.joinToken) {
+        savePlayerSession(clubSlug, { joinToken: data.joinToken });
+        setAccessToken(data.joinToken);
         setPinVerified(true);
         setErrorMsg('');
       } else {
         setErrorMsg('Invalid PIN. Please ask the club admin.');
       }
-    } catch (e) {
+    } catch {
       setErrorMsg('Verification failed.');
     }
     setIsVerifying(false);
@@ -183,7 +227,7 @@ function PlayerScreen() {
     }
   };
 
-  const handleJoin = (e) => {
+  const handleJoin = async (e) => {
     e.preventDefault();
     if (!name.trim()) return setErrorMsg('Name is required');
     setIsJoining(true);
@@ -191,44 +235,15 @@ function PlayerScreen() {
     setGpsFailed(false);
     setApprovalMessage('');
 
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        socket.emit('join_player', {
-          name, level, gender,
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-          customAvatar: avatarPreview
-        });
-      },
-      (err) => {
-        console.warn("Geolocation failed or denied. Proceeding with dummy coords.", err);
-        socket.emit('join_player', {
-          name, level, gender, lat: 0, lng: 0, customAvatar: avatarPreview
-        });
-      }
-    );
+    const attempt = ++joinAttempt.current;
+    const location = state.requireApproval || state.clubLat == null || state.clubLng == null ? {} : await getPlayerCoordinates();
+    if (attempt !== joinAttempt.current) return;
+    socket.emit('join_player', { name, level, gender, ...location, customAvatar: avatarPreview });
   };
 
   const handleRequestApproval = () => {
     setAwaitingApproval(true);
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        socket.emit('request_approval', {
-          name, level, gender,
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-          customAvatar: avatarPreview,
-          distance: gpsDistance
-        });
-      },
-      () => {
-        socket.emit('request_approval', {
-          name, level, gender,
-          customAvatar: avatarPreview,
-          distance: gpsDistance
-        });
-      }
-    );
+    socket.emit('request_approval', { name, level, gender, customAvatar: avatarPreview });
   };
 
   const handleExit = () => {
@@ -237,7 +252,10 @@ function PlayerScreen() {
       return;
     }
     socket.emit('player_exit');
-    sessionStorage.removeItem('tennis_session_id');
+    joinAttempt.current += 1;
+    clearPlayerSession(clubSlug);
+    setAccessToken('');
+    setRoomReady(false);
     setHasJoined(false);
     setPinVerified(false);
     setPlayerData(null);
@@ -395,7 +413,7 @@ function PlayerScreen() {
               </p>
               <div style={{ display: 'flex', gap: '10px' }}>
                 <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => { setGpsFailed(false); setApprovalMessage(''); }}>Back</button>
-                <button className="btn btn-primary" style={{ flex: 2 }} onClick={handleRequestApproval}>📩 Request Admin Approval</button>
+                <button className="btn btn-primary" style={{ flex: 2 }} onClick={handleRequestApproval} disabled={!roomReady}>📩 Request Admin Approval</button>
               </div>
             </div>
           ) : awaitingApproval ? (
@@ -472,7 +490,7 @@ function PlayerScreen() {
               </div>
               <div className="mt-4 flex gap-4">
                 <button type="button" className="btn btn-secondary" style={{ flex: 1 }} onClick={() => setPinVerified(false)}>Back</button>
-                <button type="submit" className="btn btn-primary" style={{ flex: 2 }} disabled={isJoining}>{isJoining ? 'Joining...' : 'Enter Session'}</button>
+                <button type="submit" className="btn btn-primary" style={{ flex: 2 }} disabled={isJoining || !roomReady}>{isJoining ? 'Joining...' : !roomReady ? 'Connecting...' : 'Enter Session'}</button>
               </div>
             </form>
           ))

@@ -1,8 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { socket } from '../socket';
 import TennisCourt from './TennisCourt';
 import MatchHistory from './MatchHistory';
+import { connectToClub } from '../clubConnection';
+
+const API_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:4000';
 
 function AdminDashboard() {
   const navigate = useNavigate();
@@ -10,6 +13,8 @@ function AdminDashboard() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  const [clubNameDraft, setClubNameDraft] = useState(null);
+  const [mapUrlDraft, setMapUrlDraft] = useState(null);
 
   const [state, setState] = useState({
     clubName: '',
@@ -25,25 +30,33 @@ function AdminDashboard() {
     requireApproval: false
   });
 
-  const API_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:4000';
+  const handleLogout = useCallback(() => {
+    localStorage.removeItem('admin_token');
+    localStorage.removeItem('admin_clubId');
+    setToken('');
+  }, []);
 
   useEffect(() => {
     if (token) {
       const clubId = localStorage.getItem('admin_clubId');
-      socket.emit('join_club_room', { clubId, role: 'ADMIN', token });
-
-      socket.on('state_update', setState);
-      socket.on('error', (msg) => {
+      const onError = (msg) => {
         if (msg.includes('Unauthorized')) handleLogout();
-        console.error(msg);
+        setErrorMsg(msg);
+      };
+      const onStateUpdate = (updatedState) => { setState(updatedState); };
+      socket.on('state_update', onStateUpdate);
+      socket.on('error', onError);
+      const disconnectClub = connectToClub(socket, { clubId, role: 'ADMIN', token }, {
+        onJoined: () => setErrorMsg(''), onError
       });
 
       return () => {
-        socket.off('state_update');
-        socket.off('error');
+        disconnectClub();
+        socket.off('state_update', onStateUpdate);
+        socket.off('error', onError);
       };
     }
-  }, [token]);
+  }, [token, handleLogout]);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -62,15 +75,9 @@ function AdminDashboard() {
       } else {
         setErrorMsg(data.error || 'Access denied.');
       }
-    } catch (e) {
+    } catch {
       setErrorMsg('Login request failed.');
     }
-  };
-
-  const handleLogout = () => {
-    localStorage.removeItem('admin_token');
-    localStorage.removeItem('admin_clubId');
-    setToken('');
   };
 
   if (!token) {
@@ -97,7 +104,19 @@ function AdminDashboard() {
   }
 
   const handleUpdateClubName = (e) => {
-    socket.emit('update_club_name', e.target.value);
+    if (clubNameDraft === null) return;
+    socket.timeout(5000).emit('update_club_name', e.target.value, (err, result) => {
+      if (err || !result?.success) setErrorMsg(result?.error || 'Could not save the club name. Please retry.');
+      else { setClubNameDraft(null); setErrorMsg(''); }
+    });
+  };
+
+  const handleUpdateClubLocation = (e) => {
+    if (mapUrlDraft === null) return;
+    socket.timeout(5000).emit('update_club_location', e.target.value, (err, result) => {
+      if (err || !result?.success) setErrorMsg(result?.error || 'Could not save the club location. Please retry.');
+      else { setMapUrlDraft(null); setErrorMsg(''); }
+    });
   };
 
   const handleAddCourt = (type) => {
@@ -266,8 +285,9 @@ function AdminDashboard() {
             <input 
               type="text" 
               className="form-control" 
-              value={state.clubName} 
-              onChange={handleUpdateClubName} 
+              value={clubNameDraft ?? state.clubName}
+              onChange={(e) => setClubNameDraft(e.target.value)}
+              onBlur={handleUpdateClubName}
               placeholder="Club Name"
               style={{ width: '250px', textAlign: 'center' }}
             />
@@ -275,13 +295,14 @@ function AdminDashboard() {
               <input 
                 type="text" 
                 className="form-control" 
-                value={state.clubMapUrl || ''} 
-                onChange={(e) => socket.emit('update_club_location', e.target.value)} 
+                value={mapUrlDraft ?? state.clubMapUrl ?? ''}
+                onChange={(e) => setMapUrlDraft(e.target.value)}
+                onBlur={handleUpdateClubLocation}
                 placeholder="Google Maps Link (optional)"
                 style={{ width: '250px', textAlign: 'center', borderColor: (state.clubLat && state.clubLng) ? 'var(--accent-tennis)' : 'inherit' }}
                 title="Paste a Google Maps link to enforce that players must be physically near the club to join."
               />
-              {(state.clubLat && state.clubLng) && (
+              {(state.clubLat != null && state.clubLng != null) && (
                 <span style={{ color: 'var(--accent-tennis)', fontSize: '1.2rem', position: 'absolute', right: '-30px' }} title={`GPS Set: ${state.clubLat.toFixed(4)}, ${state.clubLng.toFixed(4)}`}>
                   ✓
                 </span>
@@ -304,6 +325,8 @@ function AdminDashboard() {
           </button>
         </div>
       </div>
+
+      {errorMsg && <p role="alert" className="mb-4" style={{ color: 'var(--danger)' }}>{errorMsg}</p>}
 
       <div style={{ display: 'flex', gap: '1rem', flex: 1, overflow: 'hidden' }}>
         {/* Sidebar: Pending Approvals + Idle Queue */}

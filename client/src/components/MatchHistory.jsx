@@ -1,40 +1,7 @@
-import React from 'react';
+import { Icon } from './UI';
 
-const MatchHistory = ({ matchHistory, players }) => {
-  return (
-    <div className="mt-4 animate-fade-in" style={{ padding: '1rem', background: 'rgba(0,0,0,0.3)', borderRadius: '8px', border: '1px solid var(--glass-border)', textAlign: 'left' }}>
-      <details>
-        <summary style={{ cursor: 'pointer', fontWeight: 'bold', fontSize: '1.1rem', marginBottom: '0.5rem', outline: 'none', color: 'var(--accent-tennis)' }}>
-          Match History (Total: {matchHistory?.length || 0} Rounds)
-        </summary>
-        <div style={{ marginTop: '1rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-          {(!matchHistory || matchHistory.length === 0) ? (
-            <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>No rounds played yet.</p>
-          ) : (
-            [...matchHistory].reverse().map((round) => (
-              <details key={round.roundNumber} style={{ padding: '0.5rem', background: 'rgba(255,255,255,0.05)', borderRadius: '8px' }}>
-                <summary style={{ cursor: 'pointer', fontWeight: 'bold', fontSize: '0.95rem', outline: 'none' }}>Round {round.roundNumber}</summary>
-                <div style={{ marginTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                  {round.courts.map(c => (
-                    <div key={c.id} style={{ borderLeft: `3px solid ${c.type === 'Clay' ? 'var(--clay-court)' : 'var(--hard-court)'}`, paddingLeft: '0.5rem', background: 'rgba(0,0,0,0.2)', padding: '0.5rem', borderRadius: '4px' }}>
-                      <div style={{ fontWeight: 'bold', fontSize: '0.85rem', marginBottom: '4px' }}>Court {c.number} ({c.type})</div>
-                      <div style={{ fontSize: '0.8rem' }}>
-                        <span style={{ color: '#aaa' }}>Side A:</span> {c.sideA.map(id => players[id]?.name || 'Unknown').join(', ') || 'Empty'}
-                      </div>
-                      <div style={{ fontSize: '0.8rem' }}>
-                        <span style={{ color: '#aaa' }}>Side B:</span> {c.sideB.map(id => players[id]?.name || 'Unknown').join(', ') || 'Empty'}
-                      </div>
-                    </div>
-                  ))}
-                  {round.courts.length === 0 && <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>No courts used.</div>}
-                </div>
-              </details>
-            ))
-          )}
-        </div>
-      </details>
-    </div>
-  );
-};
-
-export default MatchHistory;
+export default function MatchHistory({ matchHistory = [], players = {} }) {
+  return <section className="panel history-panel"><details><summary className="history-summary"><span className="section-heading"><span className="icon-tile"><Icon name="clock" /></span><span><strong>Round history</strong><small>Your pairings, round by round.</small></span></span><span className="history-count">{matchHistory.length} {matchHistory.length === 1 ? 'round' : 'rounds'}<Icon name="chevron" size={16} /></span></summary>
+    <div className="history-body">{matchHistory.length ? [...matchHistory].reverse().map(round => <details className="round-history" key={round.roundNumber}><summary><strong>Round {String(round.roundNumber).padStart(2, '0')}</strong><span>{round.startedAt ? new Date(round.startedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : ''}<Icon name="chevron" size={15} /></span></summary><div className="history-courts">{round.courts.map(court => <div className={`history-court ${court.type === 'Clay' ? 'clay' : ''}`} key={court.id}><strong>Court {court.number}<small>{court.type}</small></strong><div>{['A', 'B'].map(side => <p key={side}><span>Side {side}</span>{court[`side${side}`].map(id => round.participants?.[id]?.name || players[id]?.name || 'Former player').join(' & ') || 'No players'}</p>)}</div></div>)}{!round.courts.length && <p className="muted">No courts used.</p>}</div></details>) : <div className="empty-state"><p>Your first round is still ahead.</p><small>Pairings will appear here when a round ends.</small></div>}</div>
+  </details></section>;
+}

@@ -1,78 +1,64 @@
-# ============================================
-# Tennis Matcher - Nginx Configuration
-# ============================================
-
-# Rate Limiting Zones
-# General API: 5 requests/sec per IP (handles normal browsing)
-limit_req_zone $binary_remote_addr zone=api_limit:10m rate=5r/s;
-# Login/Auth: 1 request/sec per IP (strict — prevents brute force)
-limit_req_zone $binary_remote_addr zone=login_limit:10m rate=1r/s;
-# Socket.io: 10 requests/sec per IP (WebSocket handshakes + polling fallback)
-limit_req_zone $binary_remote_addr zone=socket_limit:10m rate=10r/s;
+# Include from nginx's http block. Replace domain, certificate and release paths.
+# Use separate configs, processes and databases for staging and production.
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    '' close;
+}
+# Permit a whole club to arrive behind one Wi-Fi address.
+# The app separately limits failed PINs, account login attempts and socket events.
+limit_req_zone $binary_remote_addr zone=tennis_api:10m rate=100r/s;
+limit_req_zone $binary_remote_addr zone=tennis_socket:10m rate=40r/s;
 
 server {
     listen 80;
-    server_name yourdomain.com www.yourdomain.com; # REPLACE with your actual domain
-
-    # Serve the built React frontend
-    # REPLACE with the absolute path to your built React client folder
-    root /absolute/path/to/tennis-matcher/client/dist;
+    server_name tennis.example.com;
+    return 301 https://$host$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name tennis.example.com;
+    ssl_certificate /etc/letsencrypt/live/tennis.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/tennis.example.com/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    root /srv/tennis/current/client/dist;
     index index.html;
+    client_max_body_size 128k;
 
-    # React Router — fallback all non-file requests to index.html
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy no-referrer always;
+    add_header Permissions-Policy "geolocation=(self), camera=(), microphone=()" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' wss://tennis.example.com; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'" always;
+
     location / {
+        # HTML must refresh together with the command protocol after deployment.
+        expires -1;
         try_files $uri /index.html;
     }
-
-    # ---- Login & PIN verification (strictest limit) ----
-    # 1 req/sec, burst of 5 — blocks brute force password/PIN guessing
-    location /api/login {
-        limit_req zone=login_limit burst=5 nodelay;
-        limit_req_status 429;
-
-        proxy_pass http://127.0.0.1:4000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    location /assets/ {
+        expires 1y;
+        try_files $uri =404;
     }
-
-    location ~ ^/api/clubs/.+/verify-pin$ {
-        limit_req zone=login_limit burst=5 nodelay;
-        limit_req_status 429;
-
-        proxy_pass http://127.0.0.1:4000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    }
-
-    # ---- General API routes (moderate limit) ----
-    # 5 req/sec, burst of 10 — normal API usage
     location /api/ {
-        limit_req zone=api_limit burst=10 nodelay;
+        limit_req zone=tennis_api burst=1000 nodelay;
         limit_req_status 429;
-
         proxy_pass http://127.0.0.1:4000;
         proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        # Overwrite incoming forwarded values; trust only this local reverse proxy.
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
-
-    # ---- Socket.io (WebSocket + polling) ----
-    # 10 req/sec, burst of 20 — allows WebSocket handshake + reconnects
     location /socket.io/ {
-        limit_req zone=socket_limit burst=20 nodelay;
+        limit_req zone=tennis_socket burst=400 nodelay;
         limit_req_status 429;
-
         proxy_pass http://127.0.0.1:4000;
-
-        # Required for WebSocket upgrade
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-
+        proxy_set_header Connection $connection_upgrade;
         proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 75s;
+        proxy_send_timeout 75s;
     }
 }

@@ -1,9 +1,13 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+
+import { API_URL, api } from '../api';
+import { AuthLayout, Brand, Icon } from './UI';
 
 function RootDashboard() {
   const [token, setToken] = useState(localStorage.getItem('root_token') || '');
   const [clubs, setClubs] = useState([]);
   const [errorMsg, setErrorMsg] = useState('');
+  const [recoveryLink, setRecoveryLink] = useState('');
   
   // Login Form State
   const [email, setEmail] = useState('');
@@ -17,28 +21,28 @@ function RootDashboard() {
   const [newAdminEmail, setNewAdminEmail] = useState('');
   const [newAdminPassword, setNewAdminPassword] = useState('');
 
-  const API_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:4000';
-
-  useEffect(() => {
-    if (token) fetchClubs();
+  const fetchClubs = useCallback(async (signal) => {
+    const res = await fetch(`${API_URL}/api/root/clubs`, {
+      headers: { 'Authorization': `Bearer ${token}` }, signal
+    });
+    if (res.ok) return res.json();
+    const error = new Error('Could not load clubs.');
+    error.status = res.status;
+    throw error;
   }, [token]);
 
-  const fetchClubs = async () => {
-    try {
-      const res = await fetch(`${API_URL}/api/root/clubs`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setClubs(data);
-      } else {
+  useEffect(() => {
+    if (!token) return;
+    const controller = new AbortController();
+    fetchClubs(controller.signal).then(setClubs).catch(error => {
+      if (controller.signal.aborted) return;
+      if (error.status === 401 || error.status === 403) {
         localStorage.removeItem('root_token');
         setToken('');
-      }
-    } catch (e) {
-      console.error(e);
-    }
-  };
+      } else setErrorMsg(error.message);
+    });
+    return () => controller.abort();
+  }, [token, fetchClubs]);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -56,7 +60,7 @@ function RootDashboard() {
       } else {
         setErrorMsg(data.error || 'Access denied. Root only.');
       }
-    } catch (e) {
+    } catch {
       setErrorMsg('Login request failed.');
     }
   };
@@ -83,105 +87,28 @@ function RootDashboard() {
       if (res.ok) {
         setNewClubId(''); setNewClubName(''); setNewPin(''); setNewAdminEmail(''); setNewAdminPassword('');
         setErrorMsg('');
-        fetchClubs();
+        setClubs(await fetchClubs());
       } else {
         setErrorMsg(data.error || 'Failed to create club');
       }
-    } catch (e) {
+    } catch {
       setErrorMsg('Create club request failed.');
     }
     setIsCreating(false);
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem('root_token');
-    setToken('');
+  const handleLogout = async () => {
+    try {
+      await api('/logout', token, { method: 'POST' });
+      localStorage.removeItem('root_token'); setToken(''); setRecoveryLink('');
+    } catch (error) { setErrorMsg(error.message); }
   };
 
-  if (!token) {
-    return (
-      <div className="container" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh' }}>
-        <div className="glass-panel" style={{ width: '100%', maxWidth: '400px', textAlign: 'center' }}>
-          <h2>Root Admin Login</h2>
-          {errorMsg && <p style={{ color: 'var(--danger)', marginTop: '10px' }}>{errorMsg}</p>}
-          <form onSubmit={handleLogin} style={{ marginTop: '20px', textAlign: 'left' }}>
-            <div className="form-group">
-              <label className="form-label">Email</label>
-              <input type="email" value={email} onChange={e=>setEmail(e.target.value)} className="form-control" required />
-            </div>
-            <div className="form-group">
-              <label className="form-label">Password</label>
-              <input type="password" value={password} onChange={e=>setPassword(e.target.value)} className="form-control" required />
-            </div>
-            <button type="submit" className="btn btn-primary mt-4" style={{width: '100%'}}>Login</button>
-          </form>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="container" style={{ padding: '2rem' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
-        <h1 style={{ color: 'var(--accent-tennis)' }}>Super Admin (Root) Dashboard</h1>
-        <button onClick={handleLogout} className="btn btn-secondary">Logout</button>
-      </div>
-      
-      {errorMsg && <div className="mb-4" style={{ background: 'rgba(239, 68, 68, 0.1)', color: 'var(--danger)', padding: '10px', borderRadius: '8px' }}>{errorMsg}</div>}
-
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '2rem' }}>
-        
-        {/* Create Form */}
-        <div className="glass-panel" style={{ flex: '1 1 400px' }}>
-          <h3>Create New Tennis Club</h3>
-          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>Registers a new database tenant and isolated socket room.</p>
-          <form onSubmit={handleCreateClub} style={{ textAlign: 'left' }}>
-            <div className="form-group">
-              <label className="form-label">Club Identifier Slug (e.g. ny-tennis)</label>
-              <input type="text" value={newClubId} onChange={e=>setNewClubId(e.target.value)} className="form-control" required placeholder="Used in the URL" />
-            </div>
-            <div className="form-group">
-              <label className="form-label">Public Club Name</label>
-              <input type="text" value={newClubName} onChange={e=>setNewClubName(e.target.value)} className="form-control" required placeholder="e.g. New York Tennis Matcher" />
-            </div>
-            <div className="form-group">
-              <label className="form-label">Player Join PIN (e.g. 1234)</label>
-              <input type="text" value={newPin} onChange={e=>setNewPin(e.target.value)} className="form-control" required placeholder="Used by players to join via URL" />
-            </div>
-            <hr style={{ margin: '1rem 0', borderColor: 'rgba(255,255,255,0.1)' }} />
-            <div className="form-group">
-              <label className="form-label">Admin Login Email</label>
-              <input type="email" value={newAdminEmail} onChange={e=>setNewAdminEmail(e.target.value)} className="form-control" required placeholder="manager@nytennis.com" />
-            </div>
-            <div className="form-group">
-              <label className="form-label">Admin Login Password</label>
-              <input type="text" value={newAdminPassword} onChange={e=>setNewAdminPassword(e.target.value)} className="form-control" required />
-            </div>
-            <button type="submit" className="btn btn-primary mt-2" style={{width: '100%'}} disabled={isCreating}>
-              {isCreating ? 'Creating...' : 'Deploy New Club'}
-            </button>
-          </form>
-        </div>
-
-        {/* Existing Clubs */}
-        <div className="glass-panel" style={{ flex: '2 1 500px' }}>
-          <h3>Active Hosted Clubs ({clubs.length})</h3>
-          <div style={{ marginTop: '1rem', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            {clubs.length === 0 ? <p>No clubs provisioned.</p> : clubs.map(c => (
-              <div key={c.id} style={{ background: 'rgba(0,0,0,0.3)', padding: '15px', borderRadius: '8px', border: '1px solid var(--glass-border)' }}>
-                <h4 style={{ color: 'var(--accent-tennis)', margin: 0 }}>{c.name}</h4>
-                <div style={{ marginTop: '5px', fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
-                  <strong>URL:</strong> /{c.id} <br/>
-                  <strong>Join PIN:</strong> {c.pin}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-      </div>
-    </div>
-  );
+  if (!token) return <AuthLayout eyebrow="PLATFORM ACCESS" title="The bigger picture." description="Sign in to manage the clubs on Tennis Matcher."><form className="form-stack" onSubmit={handleLogin}><label>Email<input type="email" autoComplete="username" value={email} onChange={e => setEmail(e.target.value)} className="form-control" required /></label><label>Password<input type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} className="form-control" required /></label>{errorMsg && <p role="alert" className="error-message">{errorMsg}</p>}<button className="btn btn-primary btn-block" type="submit">Sign in<Icon name="arrow" /></button></form><p className="auth-help"><Icon name="shield" />Platform operators only. Club staff sign in through the clubhouse.</p><a className="text-link" href="/admin">Club staff sign in<Icon name="arrow" /></a></AuthLayout>;
+  return <div className="operator-page"><header className="public-header"><Brand /><button onClick={handleLogout} className="btn btn-secondary"><Icon name="logout" />Sign out</button></header><main className="operator-main"><div className="page-heading"><div><p className="eyebrow">PLATFORM OVERVIEW</p><h1>Clubs, in good company.</h1><p className="muted">Create a clubhouse and give its team a place to start.</p></div><span className="badge">{clubs.length} clubs</span></div>{errorMsg && <p role="alert" className="error-message">{errorMsg}</p>}
+    <div className="operator-grid"><section className="panel section-pad"><h2>Create a club</h2><p className="muted">Add the club and its first owner. They can invite the rest of their team.</p><form className="form-stack" onSubmit={handleCreateClub}><label>Club ID<input type="text" value={newClubId} onChange={e => setNewClubId(e.target.value)} className="form-control" required placeholder="e.g. riverside-tennis" autoCapitalize="none" /><span className="field-hint">Used in the club’s join link.</span></label><label>Club name<input type="text" value={newClubName} onChange={e => setNewClubName(e.target.value)} className="form-control" required placeholder="e.g. Riverside Tennis Club" /></label><label>Player PIN<input type="text" inputMode="numeric" pattern="[0-9]{4,12}" value={newPin} onChange={e => setNewPin(e.target.value)} className="form-control" required placeholder="4–12 digits" /></label><div className="form-divider"><span>FIRST CLUB OWNER</span></div><label>Owner email<input type="email" value={newAdminEmail} onChange={e => setNewAdminEmail(e.target.value)} className="form-control" required /></label><label>Owner password<input type="password" autoComplete="new-password" minLength={12} value={newAdminPassword} onChange={e => setNewAdminPassword(e.target.value)} className="form-control" required /><span className="field-hint">At least 12 characters.</span></label><button type="submit" className="btn btn-primary btn-block" disabled={isCreating}>{isCreating ? 'Creating…' : 'Create club'}<Icon name="plus" /></button></form></section>
+    <section className="panel section-pad"><div className="section-heading spread"><h2>Your clubs</h2><span className="count-pill">{clubs.length}</span></div>{recoveryLink && <div className="notice"><p>Share this private, single-use recovery link with the club owner. It expires in 24 hours.</p><input aria-label="Owner recovery link" className="form-control" readOnly value={recoveryLink} onFocus={e => e.target.select()} /><button className="btn btn-secondary btn-small" onClick={() => setRecoveryLink('')}>Hide link</button></div>}
+    <div className="operator-clubs">{!clubs.length ? <div className="empty-state"><Icon name="court" size={32} /><h3>The first club starts here.</h3><p>Create a club to get things going.</p></div> : clubs.map(c => <article className="operator-club" key={c.id}><div className="section-heading"><span className="icon-tile"><Icon name="court" /></span><div><h3>{c.name}</h3><a href={`/${c.id}`} className="text-link">/{c.id}</a></div></div><div className="toolbar spread"><span className="badge">Join PIN: {c.pin}</span><button className="btn btn-secondary btn-small" onClick={async () => { try { const result = await api(`/root/clubs/${c.id}/recovery-link`, token, { method: 'POST' }); setRecoveryLink(`${window.location.origin}/admin#setup=${result.token}`); } catch (error) { setErrorMsg(error.message); } }}><Icon name="shield" size={15} />Owner recovery link</button></div></article>)}</div></section></div>
+  </main></div>;
 }
-
 export default RootDashboard;

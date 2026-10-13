@@ -1,55 +1,22 @@
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
-const fs = require('fs');
+const sqlite3 = require('sqlite3');
+const path = require('node:path');
+const fs = require('node:fs');
+const bcrypt = require('bcryptjs');
+const { password, email } = require('./validation');
 
-const dbPath = path.resolve(__dirname, 'database.sqlite');
-const db = new sqlite3.Database(dbPath);
-
-const initDB = () => {
-  db.serialize(() => {
-    // Admins table (Root creates Admins)
-    db.run(`
-      CREATE TABLE IF NOT EXISTS Admins (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        email TEXT UNIQUE,
-        password_hash TEXT,
-        role TEXT,
-        clubId TEXT
-      )
-    `);
-
-    // Clubs table (contains PIN for players to join)
-    db.run(`
-      CREATE TABLE IF NOT EXISTS Clubs (
-        id TEXT PRIMARY KEY,
-        name TEXT,
-        pin TEXT,
-        mapUrl TEXT,
-        lat REAL,
-        lng REAL
-      )
-    `);
-
-    // Seed Root Account if no admins exist
-    db.get("SELECT count(*) as count FROM Admins", (err, row) => {
-      if (err) console.error(err);
-      if (row && row.count === 0) {
-        const bcrypt = require('bcryptjs');
-        const rootEmail = process.env.ROOT_EMAIL || 'root@tennis.com';
-        const rootPassword = process.env.ROOT_PASSWORD;
-        if (!rootPassword) {
-          console.error('FATAL: ROOT_PASSWORD environment variable is not set. Needed for initial root account seed.');
-          process.exit(1);
-        }
-        const hash = bcrypt.hashSync(rootPassword, 10);
-        db.run(`INSERT INTO Admins (email, password_hash, role, clubId) VALUES (?, ?, ?, ?)`, 
-          [rootEmail, hash, 'ROOT', null]);
-        console.log(`Seeded ROOT account. Email: ${rootEmail}. Use the Root Dashboard to create clubs.`);
-      }
-    });
+function openDatabase(filename = process.env.DATABASE_PATH || path.join(__dirname, 'database.sqlite')) {
+  const resolved = path.resolve(filename);
+  fs.mkdirSync(path.dirname(resolved), { recursive: true });
+  return new Promise((resolve, reject) => {
+    const db = new sqlite3.Database(resolved, error => error ? reject(error) : resolve(db));
   });
-};
+}
 
-initDB();
-
-module.exports = db;
+async function seedRoot(store, rootEmail, rootPassword) {
+  const root = await store.get("SELECT id FROM Admins WHERE role = 'ROOT' LIMIT 1");
+  if (root) return;
+  if (!email(rootEmail) || !password(rootPassword) || rootPassword.startsWith('replace_')) throw new Error('Initial ROOT_EMAIL and ROOT_PASSWORD (at least 12 characters, maximum 72 UTF-8 bytes) are required.');
+  const hash = await bcrypt.hash(rootPassword, 12);
+  await store.run('INSERT INTO Admins (email, password_hash, role) VALUES (?, ?, ?)', [rootEmail.toLowerCase(), hash, 'ROOT']);
+}
+module.exports = { openDatabase, seedRoot };
